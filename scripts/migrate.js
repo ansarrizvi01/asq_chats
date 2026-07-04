@@ -5,6 +5,16 @@ const { pool } = require("../db");
 async function migrate() {
   const schema = fs.readFileSync(path.join(__dirname, "..", "schema.sql"), "utf8");
   await pool.query(schema);
+  const adminEmail = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
+  if (adminEmail) {
+    await pool.query(
+      `UPDATE users
+       SET is_admin = (email = $1),
+           approval_status = CASE WHEN email = $1 THEN 'approved' ELSE approval_status END
+       WHERE is_admin = TRUE OR email = $1`,
+      [adminEmail]
+    );
+  }
   console.log("ProjectChat database schema is ready.");
 }
 

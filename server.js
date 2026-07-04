@@ -111,8 +111,18 @@ async function clearSession(req, res) {
 async function getAuthUser(req) {
   const sessionToken = req.cookies[SESSION_COOKIE];
   if (!sessionToken) return null;
+  const configuredAdmin = normalizedEmail(process.env.ADMIN_EMAIL);
+  if (configuredAdmin) {
+    await query(
+      `UPDATE users
+       SET is_admin = (email = $1),
+           approval_status = CASE WHEN email = $1 THEN 'approved' ELSE approval_status END
+       WHERE is_admin = TRUE OR email = $1`,
+      [configuredAdmin]
+    );
+  }
   const result = await query(
-    `SELECT u.id, u.name, u.email
+    `SELECT u.id, u.name, u.email, u.is_admin, u.approval_status
      FROM sessions s
      JOIN users u ON u.id = s.user_id
      WHERE s.token = $1 AND s.expires_at > NOW()`,
@@ -121,12 +131,46 @@ async function getAuthUser(req) {
   return result.rows[0] || null;
 }
 
-const requireAuth = asyncHandler(async (req, res, next) => {
+async function ensureAdminMemberships(userId) {
+  const addedAt = nowIso();
+  await transaction(async (client) => {
+    await client.query(
+      `INSERT INTO project_members (project_id, user_id, role, added_at)
+       SELECT id, $1, 'full', $2::timestamptz FROM projects
+       ON CONFLICT (project_id, user_id) DO UPDATE SET role = 'full'`,
+      [userId, addedAt]
+    );
+    await client.query(
+      `INSERT INTO room_members (room_id, user_id, role, added_at)
+       SELECT id, $1, 'full', $2::timestamptz FROM rooms
+       ON CONFLICT (room_id, user_id) DO UPDATE SET role = 'full'`,
+      [userId, addedAt]
+    );
+  });
+}
+
+const requireSignedIn = asyncHandler(async (req, res, next) => {
   const user = await getAuthUser(req);
   if (!user) return res.status(401).json({ error: "Authentication required." });
   req.user = user;
   next();
 });
+
+const requireAuth = [requireSignedIn, (req, res, next) => {
+  if (req.user.approval_status !== "approved") {
+    return res.status(403).json({ error: "Your account is waiting for admin approval." });
+  }
+  next();
+}];
+
+const requireAdmin = [
+  ...requireAuth,
+  asyncHandler(async (req, res, next) => {
+    if (!req.user.is_admin) return res.status(403).json({ error: "Administrator access required." });
+    await ensureAdminMemberships(req.user.id);
+    next();
+  })
+];
 
 async function getProjectMembership(projectId, userId, executor = { query }) {
   const result = await executor.query(
@@ -356,12 +400,17 @@ app.post("/api/auth/register", asyncHandler(async (req, res) => {
 
   const userId = id();
   const passwordHash = await bcrypt.hash(password, 12);
+  const userCount = await query("SELECT COUNT(*) AS count FROM users");
+  const configuredAdmin = normalizedEmail(process.env.ADMIN_EMAIL);
+  const isAdmin = email === configuredAdmin || (!configuredAdmin && Number(userCount.rows[0].count) === 0);
+  const approvalStatus = isAdmin ? "approved" : "pending";
   await query(
-    `INSERT INTO users (id, name, email, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)`,
-    [userId, name, email, passwordHash, nowIso()]
+    `INSERT INTO users (id, name, email, password_hash, is_admin, approval_status, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [userId, name, email, passwordHash, isAdmin, approvalStatus, nowIso()]
   );
   await setSession(res, userId);
-  res.json({ user: { id: userId, name, email } });
+  res.json({ user: { id: userId, name, email, is_admin: isAdmin, approval_status: approvalStatus } });
 }));
 
 app.post("/api/auth/login", asyncHandler(async (req, res) => {
@@ -372,10 +421,18 @@ app.post("/api/auth/login", asyncHandler(async (req, res) => {
     return res.status(401).json({ error: "Invalid email or password." });
   }
   await setSession(res, user.id);
-  res.json({ user: { id: user.id, name: user.name, email: user.email } });
+  res.json({
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      is_admin: user.is_admin,
+      approval_status: user.approval_status
+    }
+  });
 }));
 
-app.post("/api/auth/logout", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/auth/logout", requireSignedIn, asyncHandler(async (req, res) => {
   await clearSession(req, res);
   res.json({ ok: true });
 }));
@@ -385,7 +442,8 @@ app.get("/api/me", asyncHandler(async (req, res) => {
 }));
 
 app.get("/api/bootstrap", requireAuth, asyncHandler(async (req, res) => {
-  const [workspace, pendingInvitesResult] = await Promise.all([
+  if (req.user.is_admin) await ensureAdminMemberships(req.user.id);
+  const [workspace, pendingInvitesResult, pendingUsersResult] = await Promise.all([
     summarizeWorkspace(req.user.id),
     query(
       `SELECT i.id, i.token, i.email, i.role, i.status, i.created_at,
@@ -396,16 +454,104 @@ app.get("/api/bootstrap", requireAuth, asyncHandler(async (req, res) => {
        WHERE i.email = $1 AND i.status = 'pending' AND i.expires_at > NOW()
        ORDER BY i.created_at DESC`,
       [req.user.email]
-    )
+    ),
+    req.user.is_admin
+      ? query("SELECT COUNT(*) AS count FROM users WHERE approval_status = 'pending'")
+      : Promise.resolve({ rows: [{ count: 0 }] })
   ]);
-  res.json({ user: req.user, workspace, pendingInvites: pendingInvitesResult.rows });
+  res.json({
+    user: req.user,
+    workspace,
+    pendingInvites: pendingInvitesResult.rows,
+    pendingApprovalCount: Number(pendingUsersResult.rows[0].count)
+  });
+}));
+
+app.get("/api/admin/overview", requireAdmin, asyncHandler(async (_req, res) => {
+  const [usersResult, projectsResult, roomsResult] = await Promise.all([
+    query(
+      `SELECT u.id, u.name, u.email, u.created_at,
+              i.project_id AS requested_project_id, p.name AS requested_project_name
+       FROM users u
+       LEFT JOIN invites i ON i.email = u.email
+         AND i.status = 'pending' AND i.expires_at > NOW()
+       LEFT JOIN projects p ON p.id = i.project_id
+       WHERE u.approval_status = 'pending'
+       ORDER BY u.created_at ASC`
+    ),
+    query("SELECT id, name, description FROM projects ORDER BY created_at ASC"),
+    query("SELECT id, project_id, name, room_type FROM rooms ORDER BY created_at ASC")
+  ]);
+  const roomsByProject = new Map();
+  roomsResult.rows.forEach((room) => {
+    const rooms = roomsByProject.get(room.project_id) || [];
+    rooms.push(room);
+    roomsByProject.set(room.project_id, rooms);
+  });
+  res.json({
+    pendingUsers: usersResult.rows,
+    projects: projectsResult.rows.map((project) => ({
+      ...project,
+      rooms: roomsByProject.get(project.id) || []
+    }))
+  });
+}));
+
+app.post("/api/admin/users/:userId/approve", requireAdmin, asyncHandler(async (req, res) => {
+  const projectId = text(req.body.projectId, 100);
+  const role = req.body.role === "readonly" ? "readonly" : "full";
+  if (!projectId) return res.status(400).json({ error: "Choose a project before approving this user." });
+
+  const [userResult, projectResult] = await Promise.all([
+    query("SELECT id, email, is_admin FROM users WHERE id = $1", [req.params.userId]),
+    query("SELECT id FROM projects WHERE id = $1", [projectId])
+  ]);
+  const user = userResult.rows[0];
+  if (!user) return res.status(404).json({ error: "User not found." });
+  if (user.is_admin) return res.status(400).json({ error: "The administrator does not require approval." });
+  if (!projectResult.rows[0]) return res.status(404).json({ error: "Project not found." });
+
+  const approvedAt = nowIso();
+  await transaction(async (client) => {
+    await client.query("UPDATE users SET approval_status = 'approved' WHERE id = $1", [user.id]);
+    await client.query(
+      `INSERT INTO project_members (project_id, user_id, role, added_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+      [projectId, user.id, role, approvedAt]
+    );
+    await client.query(
+      `INSERT INTO room_members (room_id, user_id, role, added_at)
+       SELECT id, $1, $2, $3::timestamptz FROM rooms WHERE project_id = $4
+       ON CONFLICT (room_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+      [user.id, role, approvedAt, projectId]
+    );
+    await client.query(
+      `UPDATE invites SET status = 'accepted', accepted_at = $1
+       WHERE email = $2 AND project_id = $3 AND status = 'pending'`,
+      [approvedAt, user.email, projectId]
+    );
+  });
+  res.json({ ok: true });
+}));
+
+app.delete("/api/projects/:projectId", requireAdmin, asyncHandler(async (req, res) => {
+  const result = await query("DELETE FROM projects WHERE id = $1 RETURNING id", [req.params.projectId]);
+  if (!result.rows[0]) return res.status(404).json({ error: "Project not found." });
+  res.json({ ok: true });
+}));
+
+app.delete("/api/rooms/:roomId", requireAdmin, asyncHandler(async (req, res) => {
+  const result = await query("DELETE FROM rooms WHERE id = $1 RETURNING id", [req.params.roomId]);
+  if (!result.rows[0]) return res.status(404).json({ error: "Subproject chat not found." });
+  res.json({ ok: true });
 }));
 
 app.get("/api/rooms/:roomId", requireAuth, requireRoomMembership, asyncHandler(async (req, res) => {
   res.json(await roomDetails(req.params.roomId, req.user.id));
 }));
 
-app.post("/api/projects", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/projects", requireAdmin, asyncHandler(async (req, res) => {
   const name = text(req.body.name, 120);
   const description = text(req.body.description, 1000);
   if (!name) return res.status(400).json({ error: "Project name is required." });
@@ -425,7 +571,7 @@ app.post("/api/projects", requireAuth, asyncHandler(async (req, res) => {
   res.json({ projectId });
 }));
 
-app.post("/api/projects/:projectId/rooms", requireAuth, requireProjectFullAccess, asyncHandler(async (req, res) => {
+app.post("/api/projects/:projectId/rooms", requireAdmin, asyncHandler(async (req, res) => {
   const name = text(req.body.name, 120);
   const description = text(req.body.description, 1000);
   if (!name) return res.status(400).json({ error: "Subproject name is required." });
@@ -452,17 +598,13 @@ app.post("/api/projects/:projectId/rooms", requireAuth, requireProjectFullAccess
   res.json({ roomId });
 }));
 
-app.post("/api/invites", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/invites", requireAdmin, asyncHandler(async (req, res) => {
   const projectId = text(req.body.projectId, 100);
   const roomId = text(req.body.roomId, 100) || null;
   const email = normalizedEmail(req.body.email);
   const role = req.body.role === "readonly" ? "readonly" : "full";
   if (!projectId || !email) return res.status(400).json({ error: "Project, email, and role are required." });
 
-  const projectMembership = await getProjectMembership(projectId, req.user.id);
-  if (!projectMembership || projectMembership.role !== "full") {
-    return res.status(403).json({ error: "Full project access required to invite members." });
-  }
   if (roomId) {
     const roomResult = await query("SELECT id FROM rooms WHERE id = $1 AND project_id = $2", [roomId, projectId]);
     if (!roomResult.rows[0]) return res.status(400).json({ error: "That subproject does not belong to this project." });
@@ -496,7 +638,7 @@ app.post("/api/invites", requireAuth, asyncHandler(async (req, res) => {
   res.json({ invite, inviteUrl: `${publicOrigin(req)}/?invite=${invite.token}` });
 }));
 
-app.post("/api/invites/:token/accept", requireAuth, asyncHandler(async (req, res) => {
+app.post("/api/invites/:token/accept", requireSignedIn, asyncHandler(async (req, res) => {
   const inviteResult = await query(
     "SELECT * FROM invites WHERE token = $1 AND status = 'pending' AND expires_at > NOW()",
     [req.params.token]
@@ -510,6 +652,10 @@ app.post("/api/invites/:token/accept", requireAuth, asyncHandler(async (req, res
   }
 
   await transaction(async (client) => {
+    await client.query(
+      "UPDATE users SET approval_status = 'approved' WHERE id = $1",
+      [req.user.id]
+    );
     const projectRole = invite.room_id ? "readonly" : invite.role;
     await client.query(
       `INSERT INTO project_members (project_id, user_id, role, added_at)

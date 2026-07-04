@@ -32,6 +32,9 @@ async function run() {
     password: "strong-password"
   });
   await expectStatus(ownerRegistration, 200, "owner registration");
+  if (!ownerRegistration.body.user.is_admin || ownerRegistration.body.user.approval_status !== "approved") {
+    throw new Error("the first account was not promoted to approved administrator");
+  }
   const ownerId = ownerRegistration.body.user.id;
 
   const projectResponse = await owner.post("/api/projects").send({
@@ -67,6 +70,10 @@ async function run() {
     password: "strong-password"
   });
   await expectStatus(teammateRegistration, 200, "teammate registration");
+  if (teammateRegistration.body.user.approval_status !== "pending") {
+    throw new Error("a non-admin open signup was not placed into pending approval");
+  }
+  await expectStatus(await teammate.get("/api/bootstrap"), 403, "pending-account restriction");
 
   const inviteResponse = await owner.post("/api/invites").send({
     projectId: projectResponse.body.projectId,
@@ -99,7 +106,68 @@ async function run() {
     throw new Error("room messages or tasks were not persisted correctly");
   }
 
-  console.log("Smoke test passed: auth, projects, subprojects, messages, tasks, invites, and permissions.");
+  await expectStatus(
+    await teammate.post("/api/projects").send({ name: "Unauthorized project" }),
+    403,
+    "non-admin project restriction"
+  );
+  await expectStatus(
+    await teammate.delete(`/api/rooms/${roomId}`),
+    403,
+    "non-admin deletion restriction"
+  );
+
+  const applicant = request.agent(app);
+  const applicantRegistration = await applicant.post("/api/auth/register").send({
+    name: "Applicant",
+    email: "applicant@example.com",
+    password: "strong-password"
+  });
+  await expectStatus(applicantRegistration, 200, "applicant registration");
+  const adminOverview = await owner.get("/api/admin/overview");
+  await expectStatus(adminOverview, 200, "admin overview");
+  if (!adminOverview.body.pendingUsers.some((user) => user.id === applicantRegistration.body.user.id)) {
+    throw new Error("pending applicant did not appear in the admin overview");
+  }
+  await expectStatus(
+    await owner.post(`/api/admin/users/${applicantRegistration.body.user.id}/approve`).send({
+      projectId: projectResponse.body.projectId,
+      role: "full"
+    }),
+    200,
+    "admin approval"
+  );
+  const applicantBootstrap = await applicant.get("/api/bootstrap");
+  await expectStatus(applicantBootstrap, 200, "approved applicant bootstrap");
+  if (applicantBootstrap.body.workspace[0].rooms[0].role !== "full") {
+    throw new Error("approved applicant was not assigned to the selected project");
+  }
+
+  const disposableRoom = await owner
+    .post(`/api/projects/${projectResponse.body.projectId}/rooms`)
+    .send({ name: "Disposable", description: "Deletion test" });
+  await expectStatus(disposableRoom, 200, "disposable chat creation");
+  await expectStatus(
+    await owner.delete(`/api/rooms/${disposableRoom.body.roomId}`),
+    200,
+    "admin chat deletion"
+  );
+  await expectStatus(
+    await owner.delete(`/api/projects/${projectResponse.body.projectId}`),
+    200,
+    "admin project deletion"
+  );
+  const remaining = await Promise.all([
+    pool.query("SELECT COUNT(*) AS count FROM projects"),
+    pool.query("SELECT COUNT(*) AS count FROM rooms"),
+    pool.query("SELECT COUNT(*) AS count FROM messages"),
+    pool.query("SELECT COUNT(*) AS count FROM tasks")
+  ]);
+  if (remaining.some((result) => Number(result.rows[0].count) !== 0)) {
+    throw new Error("project deletion did not cascade through chats, messages, and tasks");
+  }
+
+  console.log("Smoke test passed: admin approval, assignments, permissions, persistence, and cascade deletion.");
 }
 
 run()

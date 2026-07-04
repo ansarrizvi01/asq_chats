@@ -2,6 +2,8 @@
 
 ProjectChat is a WhatsApp-style project workspace. Projects are containers; each subproject is a focused chat with tasks, mentions, status updates, and full or read-only access.
 
+The workspace has one global administrator. New open signups remain pending until the administrator approves them and assigns a project. Only the administrator can create or delete projects/chats and invite or approve members.
+
 ## Production stack
 
 - Express.js application and API

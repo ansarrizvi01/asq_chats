@@ -10,7 +10,9 @@ const state = {
   mainView: "chat",
   inviteToken: new URLSearchParams(window.location.search).get("invite"),
   inviteNotice: "",
-  lastInviteUrl: ""
+  lastInviteUrl: "",
+  pendingApprovalCount: 0,
+  adminOverview: null
 };
 
 const app = document.querySelector("#app");
@@ -82,18 +84,11 @@ async function bootstrap() {
     return;
   }
 
-  const data = await api("/api/bootstrap");
-  state.user = data.user;
-  state.workspace = data.workspace;
-  state.pendingInvites = data.pendingInvites;
-
   if (state.inviteToken) {
     try {
       await api(`/api/invites/${state.inviteToken}/accept`, { method: "POST" });
       state.inviteNotice = "Invitation accepted. Welcome to the project.";
-      const refreshed = await api("/api/bootstrap");
-      state.workspace = refreshed.workspace;
-      state.pendingInvites = refreshed.pendingInvites;
+      state.user = (await api("/api/me")).user;
     } catch (error) {
       state.inviteNotice = error.message;
     } finally {
@@ -101,6 +96,20 @@ async function bootstrap() {
       window.history.replaceState({}, "", window.location.pathname);
     }
   }
+
+  if (state.user.approval_status !== "approved") {
+    state.workspace = [];
+    state.currentRoom = null;
+    state.currentRoomId = null;
+    render();
+    return;
+  }
+
+  const data = await api("/api/bootstrap");
+  state.user = data.user;
+  state.workspace = data.workspace;
+  state.pendingInvites = data.pendingInvites;
+  state.pendingApprovalCount = data.pendingApprovalCount || 0;
 
   const rooms = flatRooms();
   if (!rooms.length) {
@@ -118,6 +127,26 @@ async function bootstrap() {
   render();
 }
 
+function pendingApprovalView() {
+  return `
+    <div class="auth-shell">
+      <section class="pending-card">
+        <div class="brand-badge">PC</div>
+        <div>
+          <span class="hero-badge">Approval pending</span>
+          <h2>Your account is ready.</h2>
+          <p class="hero-copy">The administrator must approve ${escapeHtml(state.user.email)} and assign it to a project before the workspace opens.</p>
+        </div>
+        ${state.inviteNotice ? `<p class="error">${escapeHtml(state.inviteNotice)}</p>` : ""}
+        <div class="pending-actions">
+          <button class="pill-button" data-action="retry-approval" type="button">Check approval</button>
+          <button class="ghost-button" data-action="logout" type="button">Sign out</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 async function loadRoom(roomId) {
   state.currentRoomId = roomId;
   state.currentRoom = await api(`/api/rooms/${roomId}`);
@@ -128,6 +157,11 @@ async function loadRoom(roomId) {
 function openModal(type) {
   state.modal = type;
   render();
+}
+
+async function loadAdminOverview() {
+  if (!state.user?.is_admin) return;
+  state.adminOverview = await api("/api/admin/overview");
 }
 
 function closeModal() {
@@ -191,7 +225,7 @@ function inviteListHtml() {
     <article class="invite-card compact">
       <div>
         <strong>${escapeHtml(invite.project_name)}</strong>
-        <p class="chat-preview">${escapeHtml(invite.room_name || "Main project room")}</p>
+        <p class="chat-preview">${escapeHtml(invite.room_name || "Entire project")}</p>
       </div>
       <div class="invite-row">
         <span class="invite-role">${escapeHtml(invite.role)}</span>
@@ -224,8 +258,12 @@ function sidebarHtml() {
             </div>
           </div>
           <div class="sidebar-icon-row">
-            <button class="icon-button" data-action="open-modal" data-modal="project" type="button" title="New project">+</button>
-            <button class="icon-button" data-action="open-modal" data-modal="workspace" type="button" title="Workspace actions">${state.pendingInvites.length}</button>
+            ${state.user.is_admin ? `<button class="icon-button" data-action="open-modal" data-modal="project" type="button" title="New project">+</button>` : ""}
+            ${state.user.is_admin || state.pendingInvites.length ? `
+              <button class="icon-button" data-action="open-modal" data-modal="workspace" type="button" title="${state.user.is_admin ? "Admin workspace" : "Invitations"}">
+                ${state.user.is_admin ? state.pendingApprovalCount : state.pendingInvites.length}
+              </button>
+            ` : ""}
             <button class="icon-button" data-action="logout" type="button" title="Logout">x</button>
           </div>
         </div>
@@ -469,7 +507,11 @@ function tasksModalHtml() {
 }
 
 function workspaceModalHtml() {
-  const projects = state.workspace.filter((project) => project.role === "full");
+  const isAdmin = state.user.is_admin;
+  const projects = isAdmin && state.adminOverview
+    ? state.adminOverview.projects
+    : state.workspace.filter((project) => project.role === "full");
+  const pendingUsers = state.adminOverview?.pendingUsers || [];
   const subprojectRooms = projects.flatMap((project) =>
     project.rooms
       .filter((room) => room.room_type === "subproject")
@@ -478,21 +520,50 @@ function workspaceModalHtml() {
 
   return `
     <div class="modal-backdrop">
-      <div class="modal">
+      <div class="modal ${isAdmin ? "modal-wide" : ""}">
         <div class="modal-head">
           <div>
-            <h3>Workspace actions</h3>
-            <p class="modal-subtitle">Create subprojects, invite members, and manage pending invites.</p>
+            <h3>${isAdmin ? "Admin workspace" : "Invitations"}</h3>
+            <p class="modal-subtitle">${isAdmin ? "Approve users, assign projects, and manage the workspace." : "Accept invitations from your administrator."}</p>
           </div>
           <button class="ghost-button" data-action="close-modal" type="button">Close</button>
         </div>
 
-        <div class="modal-section">
-          <strong>Pending invites</strong>
-          <div class="pending-invites modal-invites">
-            ${state.pendingInvites.length ? inviteListHtml() : `<div class="mini-empty">No pending invites</div>`}
+        ${state.pendingInvites.length ? `
+          <div class="modal-section">
+            <strong>Your pending invitations</strong>
+            <div class="pending-invites modal-invites">${inviteListHtml()}</div>
           </div>
-        </div>
+        ` : ""}
+
+        ${isAdmin ? `
+          <div class="modal-section">
+            <div class="section-head">
+              <strong>Pending approvals</strong>
+              <span class="section-meta">${pendingUsers.length}</span>
+            </div>
+            <div class="approval-list">
+              ${pendingUsers.length ? pendingUsers.map((user) => `
+                <form class="approval-row" data-action="approve-user" data-user-id="${escapeHtml(user.id)}">
+                  <div class="approval-person">
+                    <strong>${escapeHtml(user.name)}</strong>
+                    <span>${escapeHtml(user.email)}</span>
+                  </div>
+                  <select name="projectId" required ${projects.length ? "" : "disabled"}>
+                    ${projects.map((project) => `
+                      <option value="${escapeHtml(project.id)}" ${project.id === user.requested_project_id ? "selected" : ""}>${escapeHtml(project.name)}</option>
+                    `).join("")}
+                  </select>
+                  <select name="role" required>
+                    <option value="full">Full access</option>
+                    <option value="readonly">Read only</option>
+                  </select>
+                  <button class="pill-button" type="submit" ${projects.length ? "" : "disabled"}>Approve</button>
+                </form>
+              `).join("") : `<div class="mini-empty">No accounts are waiting for approval.</div>`}
+            </div>
+          </div>
+        ` : ""}
 
         ${state.lastInviteUrl ? `
           <div class="invite-share">
@@ -505,7 +576,7 @@ function workspaceModalHtml() {
           </div>
         ` : ""}
 
-        <div class="details-grid">
+        ${isAdmin ? `<div class="details-grid">
           <article class="detail-card">
             <strong>Create subproject</strong>
             <form class="modal-form" data-action="create-subproject">
@@ -536,6 +607,28 @@ function workspaceModalHtml() {
             </form>
           </article>
         </div>
+
+        <div class="modal-section">
+          <strong>Manage projects and chats</strong>
+          <div class="admin-project-list">
+            ${projects.length ? projects.map((project) => `
+              <article class="admin-project-card">
+                <div class="admin-project-head">
+                  <strong>${escapeHtml(project.name)}</strong>
+                  <button class="danger-button" data-action="delete-project" data-project-id="${escapeHtml(project.id)}" data-project-name="${escapeHtml(project.name)}" type="button">Delete project</button>
+                </div>
+                <div class="admin-room-list">
+                  ${project.rooms.length ? project.rooms.map((room) => `
+                    <div class="admin-room-row">
+                      <span>${escapeHtml(room.name)}</span>
+                      <button class="danger-link" data-action="delete-room" data-room-id="${escapeHtml(room.id)}" data-room-name="${escapeHtml(room.name)}" type="button">Delete chat</button>
+                    </div>
+                  `).join("") : `<span class="meta-line">No subproject chats yet.</span>`}
+                </div>
+              </article>
+            `).join("") : `<div class="mini-empty">Create a project before approving users.</div>`}
+          </div>
+        </div>` : ""}
       </div>
     </div>
   `;
@@ -584,6 +677,10 @@ function render() {
     app.innerHTML = authView();
     return;
   }
+  if (state.user.approval_status !== "approved") {
+    app.innerHTML = pendingApprovalView();
+    return;
+  }
   app.innerHTML = `
     <div class="app-shell">
       ${sidebarHtml()}
@@ -615,6 +712,7 @@ document.addEventListener("click", async (event) => {
     }
 
     if (action === "open-modal") {
+      if (actionTarget.dataset.modal === "workspace") await loadAdminOverview();
       openModal(actionTarget.dataset.modal);
     }
 
@@ -633,7 +731,28 @@ document.addEventListener("click", async (event) => {
       state.workspace = [];
       state.currentRoom = null;
       state.currentRoomId = null;
+      state.adminOverview = null;
       render();
+    }
+
+    if (action === "retry-approval") {
+      await bootstrap();
+    }
+
+    if (action === "delete-project") {
+      const confirmed = window.confirm(`Delete "${actionTarget.dataset.projectName}" and every chat, message, and task inside it?`);
+      if (!confirmed) return;
+      await api(`/api/projects/${actionTarget.dataset.projectId}`, { method: "DELETE" });
+      state.modal = null;
+      await bootstrap();
+    }
+
+    if (action === "delete-room") {
+      const confirmed = window.confirm(`Delete the "${actionTarget.dataset.roomName}" chat and all of its messages and tasks?`);
+      if (!confirmed) return;
+      await api(`/api/rooms/${actionTarget.dataset.roomId}`, { method: "DELETE" });
+      state.modal = null;
+      await bootstrap();
     }
 
     if (action === "accept-invite") {
@@ -690,6 +809,17 @@ document.addEventListener("submit", async (event) => {
         body: JSON.stringify(payload)
       });
       await bootstrap();
+    }
+
+    if (action === "approve-user") {
+      await api(`/api/admin/users/${form.dataset.userId}/approve`, {
+        method: "POST",
+        body: JSON.stringify(Object.fromEntries(formData.entries()))
+      });
+      await bootstrap();
+      await loadAdminOverview();
+      state.modal = "workspace";
+      render();
     }
 
     if (action === "create-project") {

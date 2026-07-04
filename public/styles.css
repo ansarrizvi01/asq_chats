@@ -224,6 +224,27 @@ p {
   background: rgba(255, 255, 255, 0.82);
 }
 
+.pending-card {
+  width: min(460px, 100%);
+  padding: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: var(--shadow-lg);
+  display: grid;
+  gap: 18px;
+}
+
+.pending-card h2 {
+  margin: 10px 0 6px;
+  font-family: "Space Grotesk", "Manrope", sans-serif;
+}
+
+.pending-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .auth-tabs,
 .workspace-head,
 .section-head,
@@ -813,6 +834,83 @@ p {
   gap: 8px;
 }
 
+.approval-list,
+.admin-project-list,
+.admin-room-list {
+  display: grid;
+  gap: 8px;
+}
+
+.approval-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(150px, 1fr) 120px auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.approval-person {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.approval-person span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-project-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.admin-project-head,
+.admin-room-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-room-list {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+}
+
+.admin-room-row {
+  min-height: 30px;
+  padding-left: 4px;
+}
+
+.danger-button,
+.danger-link {
+  border: 0;
+  color: #b42318;
+  background: #feeceb;
+}
+
+.danger-button {
+  padding: 7px 10px;
+  border-radius: 10px;
+  font-weight: 700;
+}
+
+.danger-link {
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: transparent;
+}
+
 .member-list-modal {
   display: grid;
   gap: 10px;
@@ -895,7 +993,8 @@ p {
   .message-form,
   .task-form,
   .inline-task-form,
-  .details-grid {
+  .details-grid,
+  .approval-row {
     grid-template-columns: 1fr;
   }
 }

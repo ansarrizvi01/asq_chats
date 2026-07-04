@@ -17,6 +17,20 @@ ProjectChat is a chat-first project workspace:
 
 The application contains no demo users, demo projects, demo messages, or default passwords. The first real user creates an account after deployment.
 
+## 1.1 Administrator Governance
+
+ProjectChat uses one global administrator model:
+
+- The first account is promoted automatically when `ADMIN_EMAIL` is not configured.
+- `ADMIN_EMAIL` can explicitly identify the administrator's email.
+- Every later open signup remains pending and cannot enter the workspace.
+- The administrator approves each pending account and assigns one project plus a full or read-only role.
+- Only the administrator can create projects, create subprojects, issue invitations, approve accounts, delete chats, or delete projects.
+- The administrator is automatically added with full access to every project and subproject.
+- Full-access members can chat and manage tasks in assigned workspaces, but they cannot create independent teams or become administrators.
+
+Deleting a subproject chat permanently deletes its messages, tasks, updates, memberships, and room invitations. Deleting a project permanently deletes every subproject and all contained data. Both actions require administrator confirmation in the interface.
+
 ## 2. Production Architecture
 
 ```text
@@ -179,6 +193,8 @@ After deployment:
 3. In Vercel, set `APP_URL` to the final production URL, such as `https://projects.yourcompany.com`.
 4. Redeploy after adding or changing environment variables; Vercel environment changes only apply to new deployments.
 
+Set `ADMIN_EMAIL` to the exact lowercase email address of the owner account. When configured, that email is the single administrator identity. Without it, the database migration promotes the oldest existing account when no administrator exists.
+
 `APP_URL` ensures generated invitation links use the permanent domain. If it is omitted, the application uses the current request domain.
 
 ## 10. Optional Custom Domain
@@ -194,7 +210,7 @@ After deployment:
 
 Recommended first setup:
 
-1. The team owner creates an account using their real work email.
+1. The team owner creates an account using the email configured as `ADMIN_EMAIL`.
 2. Select the `+` control and create a project container.
 3. Open workspace actions and create the project's first subproject.
 4. Use one subproject per distinct stream of work.
@@ -218,7 +234,7 @@ Avoid creating one giant subproject for the whole company. A subproject should h
 
 ## 12. Invite Team Members
 
-The application uses private invitation links. It does not send email automatically, so the inviter shares the generated link through the company's trusted email or messaging system.
+Only the global administrator can create invitations. The application uses private invitation links and does not send email automatically, so the administrator shares the generated link through the company's trusted email or messaging system.
 
 To invite someone:
 
@@ -239,6 +255,8 @@ The teammate then:
 2. Signs in, or creates an account using the exact invited email address.
 3. ProjectChat automatically accepts the invitation after authentication.
 4. The project and permitted subprojects appear in the sidebar.
+
+An administrator-created invitation is pre-approved: registering with the invited email and accepting the link activates that account for the invited scope. A person who registers without an invitation receives an **Approval pending** screen. The administrator opens **Admin workspace**, chooses a project and role beside that account, and selects **Approve**.
 
 Invitation behavior:
 
@@ -300,6 +318,7 @@ ProjectChat includes:
 - API and authentication rate limiting
 - Security headers through Helmet
 - Server-side membership and role checks on every protected action
+- Global administrator checks on team creation, invitations, approvals, and deletions
 - Foreign keys and constrained role/status values in PostgreSQL
 
 Operational responsibilities:
@@ -340,6 +359,25 @@ git push
 ```
 
 Use a Vercel Preview deployment for UI or workflow changes. For database schema changes, use a separate Neon preview branch where possible so testing cannot contaminate production data.
+
+### Upgrade an already deployed ProjectChat site to the admin release
+
+Run these steps once from the project folder:
+
+```powershell
+git pull
+vercel env pull .env.local --environment=production
+npm install
+npm test
+npm run db:migrate
+git add .
+git commit -m "Add administrator approvals and deletion controls"
+git push
+```
+
+Before the final push, add `ADMIN_EMAIL` in **Vercel > Project Settings > Environment Variables** for Production. Use the email of the account that should own the entire workspace. The migration preserves existing projects, chats, messages, and tasks; it promotes the earliest existing account if no administrator exists and places other existing non-admin accounts into pending status until approved and assigned.
+
+After Vercel deploys, sign in as the administrator, open **Admin workspace**, and approve each legitimate existing account into the correct project. Test deletion first on a disposable subproject because production deletion is intentionally irreversible.
 
 ## 18. Troubleshooting
 

@@ -3,8 +3,22 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
+  is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+  approval_status TEXT NOT NULL DEFAULT 'pending' CHECK (approval_status IN ('pending', 'approved')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_status TEXT NOT NULL DEFAULT 'pending';
+
+UPDATE users
+SET is_admin = TRUE, approval_status = 'approved'
+WHERE id = (
+  SELECT id FROM users ORDER BY created_at ASC LIMIT 1
+)
+AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = TRUE);
+
+UPDATE users SET approval_status = 'approved' WHERE is_admin = TRUE;
 
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
@@ -97,6 +111,7 @@ CREATE TABLE IF NOT EXISTS task_updates (
 );
 
 CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS users_approval_status_idx ON users(approval_status);
 CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS rooms_project_id_idx ON rooms(project_id);
 CREATE INDEX IF NOT EXISTS room_members_user_id_idx ON room_members(user_id);
