@@ -792,6 +792,8 @@ p {
 
 .modal-wide {
   width: min(960px, 100%);
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
 }
 
 .modal-head {
@@ -836,9 +838,100 @@ p {
 
 .approval-list,
 .admin-project-list,
-.admin-room-list {
+.admin-room-list,
+.member-directory {
   display: grid;
   gap: 8px;
+}
+
+.admin-notice {
+  padding: 8px 10px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 10px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.directory-member-card {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-soft);
+  display: grid;
+  gap: 10px;
+}
+
+.directory-member-head,
+.directory-badges,
+.membership-list,
+.task-card-controls {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.directory-member-head {
+  justify-content: space-between;
+}
+
+.directory-badges,
+.membership-list {
+  flex-wrap: wrap;
+}
+
+.status-badge,
+.admin-badge,
+.membership-chip {
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.status-badge.approved {
+  color: var(--success-strong);
+  background: var(--success-soft);
+}
+
+.status-badge.pending {
+  color: var(--warning-strong);
+  background: var(--warning-soft);
+}
+
+.admin-badge {
+  color: var(--blue-strong);
+  background: var(--blue-soft);
+}
+
+.membership-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #334155;
+  background: #e8edf2;
+}
+
+.membership-chip.room-chip {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.membership-chip button {
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.64);
+  line-height: 1;
+}
+
+.directory-assign-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 130px auto;
+  gap: 8px;
+  align-items: center;
 }
 
 .approval-row {
@@ -994,7 +1087,8 @@ p {
   .task-form,
   .inline-task-form,
   .details-grid,
-  .approval-row {
+  .approval-row,
+  .directory-assign-form {
     grid-template-columns: 1fr;
   }
 }

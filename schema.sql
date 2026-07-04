@@ -49,9 +49,12 @@ CREATE TABLE IF NOT EXISTS project_members (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   role TEXT NOT NULL CHECK (role IN ('full', 'readonly')),
+  access_scope TEXT NOT NULL DEFAULT 'project' CHECK (access_scope IN ('project', 'container')),
   added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (project_id, user_id)
 );
+
+ALTER TABLE project_members ADD COLUMN IF NOT EXISTS access_scope TEXT NOT NULL DEFAULT 'project';
 
 CREATE TABLE IF NOT EXISTS room_members (
   room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -114,6 +117,7 @@ CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS users_approval_status_idx ON users(approval_status);
 CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS rooms_project_id_idx ON rooms(project_id);
+CREATE INDEX IF NOT EXISTS project_members_user_id_idx ON project_members(user_id);
 CREATE INDEX IF NOT EXISTS room_members_user_id_idx ON room_members(user_id);
 CREATE INDEX IF NOT EXISTS invites_email_status_idx ON invites(email, status);
 CREATE INDEX IF NOT EXISTS invites_expires_at_idx ON invites(expires_at);

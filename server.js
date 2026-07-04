@@ -135,9 +135,9 @@ async function ensureAdminMemberships(userId) {
   const addedAt = nowIso();
   await transaction(async (client) => {
     await client.query(
-      `INSERT INTO project_members (project_id, user_id, role, added_at)
-       SELECT id, $1, 'full', $2::timestamptz FROM projects
-       ON CONFLICT (project_id, user_id) DO UPDATE SET role = 'full'`,
+      `INSERT INTO project_members (project_id, user_id, role, access_scope, added_at)
+       SELECT id, $1, 'full', 'project', $2::timestamptz FROM projects
+       ON CONFLICT (project_id, user_id) DO UPDATE SET role = 'full', access_scope = 'project'`,
       [userId, addedAt]
     );
     await client.query(
@@ -174,7 +174,7 @@ const requireAdmin = [
 
 async function getProjectMembership(projectId, userId, executor = { query }) {
   const result = await executor.query(
-    `SELECT role FROM project_members WHERE project_id = $1 AND user_id = $2`,
+    `SELECT role, access_scope FROM project_members WHERE project_id = $1 AND user_id = $2`,
     [projectId, userId]
   );
   return result.rows[0] || null;
@@ -202,6 +202,72 @@ async function getRoomMembership(roomId, userId, executor = { query }) {
       created_at: record.created_at
     }
   };
+}
+
+async function getManageableUser(userId) {
+  const result = await query(
+    "SELECT id, name, email, is_admin, approval_status FROM users WHERE id = $1",
+    [userId]
+  );
+  return result.rows[0] || null;
+}
+
+async function assignUserAccess({ userId, projectId, roomId, role }) {
+  const [user, projectResult] = await Promise.all([
+    getManageableUser(userId),
+    query("SELECT id FROM projects WHERE id = $1", [projectId])
+  ]);
+  if (!user) return { error: "User not found.", status: 404 };
+  if (user.is_admin) return { error: "The global administrator already has full access everywhere.", status: 400 };
+  if (!projectResult.rows[0]) return { error: "Project not found.", status: 404 };
+
+  if (roomId) {
+    const roomResult = await query("SELECT id FROM rooms WHERE id = $1 AND project_id = $2", [roomId, projectId]);
+    if (!roomResult.rows[0]) return { error: "Subproject chat not found in the selected project.", status: 404 };
+  }
+
+  const assignedAt = nowIso();
+  await transaction(async (client) => {
+    await client.query("UPDATE users SET approval_status = 'approved' WHERE id = $1", [userId]);
+
+    if (roomId) {
+      await client.query(
+        `INSERT INTO project_members (project_id, user_id, role, access_scope, added_at)
+         VALUES ($1, $2, 'readonly', 'container', $3)
+         ON CONFLICT (project_id, user_id) DO UPDATE
+         SET access_scope = project_members.access_scope,
+             role = project_members.role`,
+        [projectId, userId, assignedAt]
+      );
+      await client.query(
+        `INSERT INTO room_members (room_id, user_id, role, added_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (room_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+        [roomId, userId, role, assignedAt]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO project_members (project_id, user_id, role, access_scope, added_at)
+         VALUES ($1, $2, $3, 'project', $4)
+         ON CONFLICT (project_id, user_id) DO UPDATE
+         SET role = EXCLUDED.role, access_scope = 'project'`,
+        [projectId, userId, role, assignedAt]
+      );
+      await client.query(
+        `INSERT INTO room_members (room_id, user_id, role, added_at)
+         SELECT id, $1, $2, $3::timestamptz FROM rooms WHERE project_id = $4
+         ON CONFLICT (room_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+        [userId, role, assignedAt, projectId]
+      );
+    }
+
+    await client.query(
+      `UPDATE invites SET status = 'accepted', accepted_at = $1
+       WHERE email = $2 AND project_id = $3 AND status = 'pending'`,
+      [assignedAt, user.email, projectId]
+    );
+  });
+  return { ok: true };
 }
 
 const requireProjectFullAccess = asyncHandler(async (req, res, next) => {
@@ -497,41 +563,121 @@ app.get("/api/admin/overview", requireAdmin, asyncHandler(async (_req, res) => {
   });
 }));
 
+app.get("/api/admin/users", requireAdmin, asyncHandler(async (_req, res) => {
+  const [usersResult, projectMembershipsResult, roomMembershipsResult] = await Promise.all([
+    query(
+      `SELECT id, name, email, approval_status, is_admin, created_at
+       FROM users ORDER BY is_admin DESC, name ASC, email ASC`
+    ),
+    query(
+      `SELECT pm.user_id, pm.project_id, p.name AS project_name, pm.role, pm.access_scope
+       FROM project_members pm
+       JOIN projects p ON p.id = pm.project_id
+       ORDER BY p.name ASC`
+    ),
+    query(
+      `SELECT rm.user_id, rm.room_id, r.name AS room_name, r.project_id,
+              p.name AS project_name, rm.role
+       FROM room_members rm
+       JOIN rooms r ON r.id = rm.room_id
+       JOIN projects p ON p.id = r.project_id
+       ORDER BY p.name ASC, r.name ASC`
+    )
+  ]);
+  const projectsByUser = new Map();
+  projectMembershipsResult.rows.forEach((membership) => {
+    const memberships = projectsByUser.get(membership.user_id) || [];
+    memberships.push(membership);
+    projectsByUser.set(membership.user_id, memberships);
+  });
+  const roomsByUser = new Map();
+  roomMembershipsResult.rows.forEach((membership) => {
+    const memberships = roomsByUser.get(membership.user_id) || [];
+    memberships.push(membership);
+    roomsByUser.set(membership.user_id, memberships);
+  });
+  res.json({
+    users: usersResult.rows.map((user) => ({
+      ...user,
+      projects: projectsByUser.get(user.id) || [],
+      rooms: roomsByUser.get(user.id) || []
+    }))
+  });
+}));
+
 app.post("/api/admin/users/:userId/approve", requireAdmin, asyncHandler(async (req, res) => {
   const projectId = text(req.body.projectId, 100);
   const role = req.body.role === "readonly" ? "readonly" : "full";
   if (!projectId) return res.status(400).json({ error: "Choose a project before approving this user." });
+  const result = await assignUserAccess({ userId: req.params.userId, projectId, roomId: null, role });
+  if (result.error) return res.status(result.status).json({ error: result.error });
+  res.json(result);
+}));
 
-  const [userResult, projectResult] = await Promise.all([
-    query("SELECT id, email, is_admin FROM users WHERE id = $1", [req.params.userId]),
-    query("SELECT id FROM projects WHERE id = $1", [projectId])
-  ]);
-  const user = userResult.rows[0];
+app.post("/api/admin/users/:userId/assign", requireAdmin, asyncHandler(async (req, res) => {
+  const projectId = text(req.body.projectId, 100);
+  const roomId = text(req.body.roomId, 100) || null;
+  const role = req.body.role === "readonly" ? "readonly" : "full";
+  if (!projectId) return res.status(400).json({ error: "Choose a project or subproject." });
+  const result = await assignUserAccess({ userId: req.params.userId, projectId, roomId, role });
+  if (result.error) return res.status(result.status).json({ error: result.error });
+  res.json(result);
+}));
+
+app.delete("/api/admin/users/:userId/projects/:projectId", requireAdmin, asyncHandler(async (req, res) => {
+  const user = await getManageableUser(req.params.userId);
   if (!user) return res.status(404).json({ error: "User not found." });
-  if (user.is_admin) return res.status(400).json({ error: "The administrator does not require approval." });
-  if (!projectResult.rows[0]) return res.status(404).json({ error: "Project not found." });
+  if (user.is_admin) return res.status(400).json({ error: "The global administrator cannot be removed from a project." });
 
-  const approvedAt = nowIso();
-  await transaction(async (client) => {
-    await client.query("UPDATE users SET approval_status = 'approved' WHERE id = $1", [user.id]);
+  const removed = await transaction(async (client) => {
     await client.query(
-      `INSERT INTO project_members (project_id, user_id, role, added_at)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
-      [projectId, user.id, role, approvedAt]
+      `DELETE FROM room_members
+       WHERE user_id = $1 AND room_id IN (SELECT id FROM rooms WHERE project_id = $2)`,
+      [user.id, req.params.projectId]
     );
-    await client.query(
-      `INSERT INTO room_members (room_id, user_id, role, added_at)
-       SELECT id, $1, $2, $3::timestamptz FROM rooms WHERE project_id = $4
-       ON CONFLICT (room_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
-      [user.id, role, approvedAt, projectId]
-    );
-    await client.query(
-      `UPDATE invites SET status = 'accepted', accepted_at = $1
-       WHERE email = $2 AND project_id = $3 AND status = 'pending'`,
-      [approvedAt, user.email, projectId]
+    return client.query(
+      "DELETE FROM project_members WHERE user_id = $1 AND project_id = $2 RETURNING project_id",
+      [user.id, req.params.projectId]
     );
   });
+  if (!removed.rows[0]) return res.status(404).json({ error: "This user is not assigned to that project." });
+  res.json({ ok: true });
+}));
+
+app.delete("/api/admin/users/:userId/rooms/:roomId", requireAdmin, asyncHandler(async (req, res) => {
+  const [user, roomResult] = await Promise.all([
+    getManageableUser(req.params.userId),
+    query("SELECT id, project_id FROM rooms WHERE id = $1", [req.params.roomId])
+  ]);
+  if (!user) return res.status(404).json({ error: "User not found." });
+  if (user.is_admin) return res.status(400).json({ error: "The global administrator cannot be removed from a subproject." });
+  const room = roomResult.rows[0];
+  if (!room) return res.status(404).json({ error: "Subproject chat not found." });
+
+  const removed = await transaction(async (client) => {
+    const deletion = await client.query(
+      "DELETE FROM room_members WHERE user_id = $1 AND room_id = $2 RETURNING room_id",
+      [user.id, room.id]
+    );
+    if (!deletion.rows[0]) return deletion;
+    const projectMembership = await getProjectMembership(room.project_id, user.id, client);
+    if (projectMembership?.access_scope === "container") {
+      const remaining = await client.query(
+        `SELECT 1 FROM room_members rm
+         JOIN rooms r ON r.id = rm.room_id
+         WHERE rm.user_id = $1 AND r.project_id = $2 LIMIT 1`,
+        [user.id, room.project_id]
+      );
+      if (!remaining.rows[0]) {
+        await client.query(
+          "DELETE FROM project_members WHERE user_id = $1 AND project_id = $2",
+          [user.id, room.project_id]
+        );
+      }
+    }
+    return deletion;
+  });
+  if (!removed.rows[0]) return res.status(404).json({ error: "This user is not assigned to that subproject." });
   res.json({ ok: true });
 }));
 
@@ -586,7 +732,8 @@ app.post("/api/projects/:projectId/rooms", requireAdmin, asyncHandler(async (req
     );
     await client.query(
       `INSERT INTO room_members (room_id, user_id, role, added_at)
-       SELECT $1, user_id, role, $2::timestamptz FROM project_members WHERE project_id = $3`,
+       SELECT $1, user_id, role, $2::timestamptz
+       FROM project_members WHERE project_id = $3 AND access_scope = 'project'`,
       [roomId, createdAt, req.params.projectId]
     );
     await client.query(
@@ -657,12 +804,21 @@ app.post("/api/invites/:token/accept", requireSignedIn, asyncHandler(async (req,
       [req.user.id]
     );
     const projectRole = invite.room_id ? "readonly" : invite.role;
+    const accessScope = invite.room_id ? "container" : "project";
     await client.query(
-      `INSERT INTO project_members (project_id, user_id, role, added_at)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO project_members (project_id, user_id, role, access_scope, added_at)
+       VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (project_id, user_id) DO UPDATE
-       SET role = CASE WHEN EXCLUDED.role = 'full' THEN 'full' ELSE project_members.role END`,
-      [invite.project_id, req.user.id, projectRole, nowIso()]
+       SET access_scope = CASE
+             WHEN project_members.access_scope = 'project' OR EXCLUDED.access_scope = 'project' THEN 'project'
+             ELSE 'container'
+           END,
+           role = CASE
+             WHEN EXCLUDED.access_scope = 'project' THEN EXCLUDED.role
+             WHEN project_members.access_scope = 'project' THEN project_members.role
+             ELSE 'readonly'
+           END`,
+      [invite.project_id, req.user.id, projectRole, accessScope, nowIso()]
     );
 
     if (invite.room_id) {
@@ -744,6 +900,12 @@ app.post("/api/rooms/:roomId/tasks", requireAuth, requireRoomFullAccess, asyncHa
     );
   });
   res.json({ ok: true, taskId });
+}));
+
+app.delete("/api/tasks/:taskId", requireAdmin, asyncHandler(async (req, res) => {
+  const result = await query("DELETE FROM tasks WHERE id = $1 RETURNING id", [req.params.taskId]);
+  if (!result.rows[0]) return res.status(404).json({ error: "Task not found." });
+  res.json({ ok: true });
 }));
 
 app.patch("/api/tasks/:taskId", requireAuth, asyncHandler(async (req, res) => {

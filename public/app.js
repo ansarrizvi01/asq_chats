@@ -12,7 +12,8 @@ const state = {
   inviteNotice: "",
   lastInviteUrl: "",
   pendingApprovalCount: 0,
-  adminOverview: null
+  adminOverview: null,
+  adminNotice: ""
 };
 
 const app = document.querySelector("#app");
@@ -161,7 +162,19 @@ function openModal(type) {
 
 async function loadAdminOverview() {
   if (!state.user?.is_admin) return;
-  state.adminOverview = await api("/api/admin/overview");
+  const [overview, directory] = await Promise.all([
+    api("/api/admin/overview"),
+    api("/api/admin/users")
+  ]);
+  state.adminOverview = { ...overview, users: directory.users };
+}
+
+async function refreshAdminWorkspace(message) {
+  state.adminNotice = message;
+  await bootstrap();
+  await loadAdminOverview();
+  state.modal = "workspace";
+  render();
 }
 
 function closeModal() {
@@ -367,9 +380,12 @@ function mainHtml() {
               <article class="task-card ${task.status === "done" ? "done" : ""}">
                 <div class="task-card-top">
                   <strong class="task-title">${escapeHtml(task.title)}</strong>
-                  <button class="task-toggle" data-action="toggle-task" data-task-id="${escapeHtml(task.id)}" data-status="${task.status === "open" ? "done" : "open"}" type="button">
-                    ${task.status === "open" ? "Mark done" : "Re-open"}
-                  </button>
+                  <div class="task-card-controls">
+                    <button class="task-toggle" data-action="toggle-task" data-task-id="${escapeHtml(task.id)}" data-status="${task.status === "open" ? "done" : "open"}" type="button">
+                      ${task.status === "open" ? "Mark done" : "Re-open"}
+                    </button>
+                    ${state.user.is_admin ? `<button class="danger-link" data-action="delete-task" data-task-id="${escapeHtml(task.id)}" type="button">Delete</button>` : ""}
+                  </div>
                 </div>
                 <p>${escapeHtml(task.note)}</p>
                 <p class="task-meta">Assigned to ${escapeHtml(task.assignee_name)} / ${escapeHtml(task.status)}</p>
@@ -487,9 +503,12 @@ function tasksModalHtml() {
             <article class="task-card ${task.status === "done" ? "done" : ""}">
               <div class="task-card-top">
                 <strong class="task-title">${escapeHtml(task.title)}</strong>
-                <button class="task-toggle" data-action="toggle-task" data-task-id="${escapeHtml(task.id)}" data-status="${task.status === "open" ? "done" : "open"}" type="button">
-                  ${task.status === "open" ? "Mark done" : "Re-open"}
-                </button>
+                <div class="task-card-controls">
+                  <button class="task-toggle" data-action="toggle-task" data-task-id="${escapeHtml(task.id)}" data-status="${task.status === "open" ? "done" : "open"}" type="button">
+                    ${task.status === "open" ? "Mark done" : "Re-open"}
+                  </button>
+                  ${state.user.is_admin ? `<button class="danger-link" data-action="delete-task" data-task-id="${escapeHtml(task.id)}" type="button">Delete</button>` : ""}
+                </div>
               </div>
               <p>${escapeHtml(task.note)}</p>
               <p class="task-meta">Assigned to ${escapeHtml(task.assignee_name)} / ${escapeHtml(task.status)}</p>
@@ -506,12 +525,63 @@ function tasksModalHtml() {
   `;
 }
 
+function memberDirectoryHtml(users, projects) {
+  return `
+    <div class="member-directory">
+      ${users.map((user) => `
+        <article class="directory-member-card">
+          <div class="directory-member-head">
+            <div>
+              <strong>${escapeHtml(user.name || "Unnamed member")}</strong>
+              <p class="meta-line">${escapeHtml(user.email)}</p>
+            </div>
+            <div class="directory-badges">
+              <span class="status-badge ${escapeHtml(user.approval_status)}">${escapeHtml(user.approval_status)}</span>
+              ${user.is_admin ? `<span class="admin-badge">Global admin</span>` : ""}
+            </div>
+          </div>
+          <div class="membership-list">
+            ${user.projects.map((membership) => `
+              <span class="membership-chip">
+                ${escapeHtml(membership.project_name)} · ${escapeHtml(membership.role)}${membership.access_scope === "container" ? " · container" : ""}
+                ${user.is_admin ? "" : `<button data-action="remove-project-member" data-user-id="${escapeHtml(user.id)}" data-project-id="${escapeHtml(membership.project_id)}" type="button" title="Remove project access">×</button>`}
+              </span>
+            `).join("")}
+            ${user.rooms.map((membership) => `
+              <span class="membership-chip room-chip">
+                ${escapeHtml(membership.project_name)} / ${escapeHtml(membership.room_name)} · ${escapeHtml(membership.role)}
+                ${user.is_admin ? "" : `<button data-action="remove-room-member" data-user-id="${escapeHtml(user.id)}" data-room-id="${escapeHtml(membership.room_id)}" type="button" title="Remove chat access">×</button>`}
+              </span>
+            `).join("")}
+            ${!user.projects.length && !user.rooms.length ? `<span class="meta-line">No project access</span>` : ""}
+          </div>
+          ${user.is_admin ? `<p class="meta-line">The global admin always has full access and cannot be removed or demoted.</p>` : `
+            <form class="directory-assign-form" data-action="assign-member" data-user-id="${escapeHtml(user.id)}">
+              <select name="target" required ${projects.length ? "" : "disabled"}>
+                ${projects.flatMap((project) => [
+                  `<option value="project:${escapeHtml(project.id)}">${escapeHtml(project.name)} · entire project</option>`,
+                  ...project.rooms.map((room) => `<option value="room:${escapeHtml(project.id)}:${escapeHtml(room.id)}">${escapeHtml(project.name)} / ${escapeHtml(room.name)}</option>`)
+                ]).join("")}
+              </select>
+              <select name="role" required>
+                <option value="full">Full access</option>
+                <option value="readonly">Read only</option>
+              </select>
+              <button class="soft-button" type="submit" ${projects.length ? "" : "disabled"}>${user.approval_status === "pending" ? "Approve and assign" : "Add or update"}</button>
+            </form>
+          `}
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
 function workspaceModalHtml() {
   const isAdmin = state.user.is_admin;
   const projects = isAdmin && state.adminOverview
     ? state.adminOverview.projects
     : state.workspace.filter((project) => project.role === "full");
-  const pendingUsers = state.adminOverview?.pendingUsers || [];
+  const directoryUsers = state.adminOverview?.users || [];
   const subprojectRooms = projects.flatMap((project) =>
     project.rooms
       .filter((room) => room.room_type === "subproject")
@@ -539,29 +609,11 @@ function workspaceModalHtml() {
         ${isAdmin ? `
           <div class="modal-section">
             <div class="section-head">
-              <strong>Pending approvals</strong>
-              <span class="section-meta">${pendingUsers.length}</span>
+              <strong>Members</strong>
+              <span class="section-meta">${directoryUsers.length} accounts</span>
             </div>
-            <div class="approval-list">
-              ${pendingUsers.length ? pendingUsers.map((user) => `
-                <form class="approval-row" data-action="approve-user" data-user-id="${escapeHtml(user.id)}">
-                  <div class="approval-person">
-                    <strong>${escapeHtml(user.name)}</strong>
-                    <span>${escapeHtml(user.email)}</span>
-                  </div>
-                  <select name="projectId" required ${projects.length ? "" : "disabled"}>
-                    ${projects.map((project) => `
-                      <option value="${escapeHtml(project.id)}" ${project.id === user.requested_project_id ? "selected" : ""}>${escapeHtml(project.name)}</option>
-                    `).join("")}
-                  </select>
-                  <select name="role" required>
-                    <option value="full">Full access</option>
-                    <option value="readonly">Read only</option>
-                  </select>
-                  <button class="pill-button" type="submit" ${projects.length ? "" : "disabled"}>Approve</button>
-                </form>
-              `).join("") : `<div class="mini-empty">No accounts are waiting for approval.</div>`}
-            </div>
+            ${state.adminNotice ? `<div class="admin-notice">${escapeHtml(state.adminNotice)}</div>` : ""}
+            ${directoryUsers.length ? memberDirectoryHtml(directoryUsers, projects) : `<div class="mini-empty">No member accounts found.</div>`}
           </div>
         ` : ""}
 
@@ -755,6 +807,24 @@ document.addEventListener("click", async (event) => {
       await bootstrap();
     }
 
+    if (action === "delete-task") {
+      if (!window.confirm("Delete this task permanently?")) return;
+      await api(`/api/tasks/${actionTarget.dataset.taskId}`, { method: "DELETE" });
+      await bootstrap();
+    }
+
+    if (action === "remove-project-member") {
+      if (!window.confirm("Remove this member from the entire project?")) return;
+      await api(`/api/admin/users/${actionTarget.dataset.userId}/projects/${actionTarget.dataset.projectId}`, { method: "DELETE" });
+      await refreshAdminWorkspace("Project access removed. The user account was preserved.");
+    }
+
+    if (action === "remove-room-member") {
+      if (!window.confirm("Remove this member from this subproject chat?")) return;
+      await api(`/api/admin/users/${actionTarget.dataset.userId}/rooms/${actionTarget.dataset.roomId}`, { method: "DELETE" });
+      await refreshAdminWorkspace("Subproject access removed.");
+    }
+
     if (action === "accept-invite") {
       await api(`/api/invites/${actionTarget.dataset.token}/accept`, { method: "POST" });
       await bootstrap();
@@ -820,6 +890,20 @@ document.addEventListener("submit", async (event) => {
       await loadAdminOverview();
       state.modal = "workspace";
       render();
+    }
+
+    if (action === "assign-member") {
+      const [scope, projectId, roomId] = String(formData.get("target") || "").split(":");
+      if (!projectId || !["project", "room"].includes(scope)) throw new Error("Choose a project or subproject.");
+      await api(`/api/admin/users/${form.dataset.userId}/assign`, {
+        method: "POST",
+        body: JSON.stringify({
+          projectId,
+          roomId: scope === "room" ? roomId : "",
+          role: formData.get("role")
+        })
+      });
+      await refreshAdminWorkspace("Member access updated.");
     }
 
     if (action === "create-project") {

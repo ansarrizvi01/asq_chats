@@ -31,6 +31,8 @@ ProjectChat uses one global administrator model:
 
 Deleting a subproject chat permanently deletes its messages, tasks, updates, memberships, and room invitations. Deleting a project permanently deletes every subproject and all contained data. Both actions require administrator confirmation in the interface.
 
+Individual tasks can also be deleted separately. Task deletion is admin-only, permanent, removes that task's status-update history, and does not delete the surrounding chat or project.
+
 ## 2. Production Architecture
 
 ```text
@@ -267,6 +269,33 @@ Invitation behavior:
 
 Do not post invitation links in public channels. The server also checks that the signed-in email matches the invited email.
 
+### Admin Member Directory
+
+Open **Admin workspace > Members** to manage every account in the system, including accounts that no longer belong to a project.
+
+Each member card shows:
+
+- Name and email
+- Approved or pending account status
+- Global administrator status
+- Current project memberships and roles
+- Current subproject/chat memberships and roles
+
+To directly assign an existing user:
+
+1. Find the user in **Members**.
+2. Select an entire project or one specific subproject.
+3. Select **Full access** or **Read only**.
+4. Select **Add or update**. For a pending account, the button reads **Approve and assign**.
+
+Direct assignment does not create an invitation and does not require a new signup, email confirmation, or rejoining the app. Use an invite link for someone who has not registered yet; use direct assignment for an account that already exists.
+
+Assigning an entire project updates access to every current subproject and causes future subprojects to inherit the same role. Assigning one subproject exposes only that chat and the project container. Selecting the same destination again updates the role instead of creating duplicate membership.
+
+Use the `×` beside a project or chat membership to remove access. Removing project access also removes all room access in that project. Removing one chat affects only that chat; if it was the user's last specific chat in that project, the empty container access is also removed. These actions preserve the user account, historical messages, authored tasks, and activity records.
+
+The global administrator cannot be removed or demoted and remains full-access everywhere.
+
 ## 13. Daily Team Workflow
 
 Use the chat as the chronological record and Tasks as the actionable record.
@@ -286,6 +315,7 @@ Use the chat as the chronological record and Tasks as the actionable record.
 4. Mention one relevant person when attention is specifically required.
 5. Create a formal task when work needs an owner and completion state.
 6. Add a status update to the task instead of repeatedly asking for progress in chat.
+7. When a task was created by mistake or must be permanently removed, the administrator can select **Delete** on that individual task and confirm **Delete this task permanently?**
 
 ### End of day
 
@@ -326,7 +356,7 @@ Operational responsibilities:
 1. Use HTTPS only in production; Vercel provides it automatically.
 2. Keep `DATABASE_URL` only in Vercel/Neon environment settings.
 3. Require strong unique passwords through company policy or a password manager.
-4. Remove access in the database if an employee leaves; a dedicated member-removal screen is not included yet.
+4. Use **Admin workspace > Members** to remove an employee from projects and subprojects without deleting their account or historical contributions.
 5. The current release does not include password-reset email. An administrator should treat forgotten-password recovery as a support task until an email provider and reset flow are added.
 
 ## 16. Database Operations and Backups
@@ -378,6 +408,22 @@ git push
 Before the final push, add `ADMIN_EMAIL` in **Vercel > Project Settings > Environment Variables** for Production. Use the email of the account that should own the entire workspace. The migration preserves existing projects, chats, messages, and tasks; it promotes the earliest existing account if no administrator exists and places other existing non-admin accounts into pending status until approved and assigned.
 
 After Vercel deploys, sign in as the administrator, open **Admin workspace**, and approve each legitimate existing account into the correct project. Test deletion first on a disposable subproject because production deletion is intentionally irreversible.
+
+### Deploy the member-directory and task-deletion release
+
+Run the production migration before pushing the application update:
+
+```powershell
+vercel env pull .env.local --environment=production
+npm install
+npm test
+npm run db:migrate
+git add .
+git commit -m "Add admin member directory and task deletion"
+git push
+```
+
+Confirm Vercel deploys the commit and `ADMIN_EMAIL` still exists in the Production environment. In production, test one disposable task deletion, one disposable project deletion, and reassignment of an existing member into a new project. The migration preserves existing accounts, memberships, projects, chats, messages, and tasks while adding the membership-scope field required for specific-chat assignments.
 
 ## 18. Troubleshooting
 
