@@ -13,7 +13,9 @@ const state = {
   lastInviteUrl: "",
   pendingApprovalCount: 0,
   adminOverview: null,
-  adminNotice: ""
+  adminNotice: "",
+  notifications: [],
+  unreadNotificationCount: 0
 };
 
 const app = document.querySelector("#app");
@@ -77,6 +79,14 @@ function currentRoomMeta() {
   return flatRooms().find((room) => room.id === state.currentRoomId) || null;
 }
 
+function setRoomUnread(roomId, count) {
+  state.workspace.forEach((project) => {
+    project.rooms.forEach((room) => {
+      if (room.id === roomId) room.unreadCount = count;
+    });
+  });
+}
+
 async function bootstrap() {
   const me = await api("/api/me");
   state.user = me.user;
@@ -111,6 +121,7 @@ async function bootstrap() {
   state.workspace = data.workspace;
   state.pendingInvites = data.pendingInvites;
   state.pendingApprovalCount = data.pendingApprovalCount || 0;
+  state.unreadNotificationCount = data.unreadNotificationCount || 0;
 
   const rooms = flatRooms();
   if (!rooms.length) {
@@ -151,8 +162,47 @@ function pendingApprovalView() {
 async function loadRoom(roomId) {
   state.currentRoomId = roomId;
   state.currentRoom = await api(`/api/rooms/${roomId}`);
+  setRoomUnread(roomId, 0);
   state.mainView = "chat";
   render();
+}
+
+function countdownText(dueAt, status) {
+  if (!dueAt) return "";
+  if (status === "done") return `Completed / deadline ${new Date(dueAt).toLocaleString()}`;
+  const remaining = new Date(dueAt).getTime() - Date.now();
+  const absolute = Math.abs(remaining);
+  const days = Math.floor(absolute / 86400000);
+  const hours = Math.floor((absolute % 86400000) / 3600000);
+  const minutes = Math.floor((absolute % 3600000) / 60000);
+  const seconds = Math.floor((absolute % 60000) / 1000);
+  const value = days ? `${days}d ${hours}h` : hours ? `${hours}h ${minutes}m` : `${minutes}m ${seconds}s`;
+  return remaining >= 0 ? `Due in ${value}` : `Overdue by ${value}`;
+}
+
+function updateCountdowns() {
+  document.querySelectorAll("[data-task-due]").forEach((element) => {
+    element.textContent = countdownText(element.dataset.taskDue, element.dataset.taskStatus);
+    element.classList.toggle("overdue", element.dataset.taskStatus !== "done" && new Date(element.dataset.taskDue).getTime() < Date.now());
+  });
+}
+
+async function pollActivity() {
+  if (!state.user || state.user.approval_status !== "approved") return;
+  try {
+    const activity = await api("/api/activity");
+    state.unreadNotificationCount = activity.unreadNotificationCount;
+    const counts = new Map(activity.rooms.map((room) => [room.roomId, room.unreadCount]));
+    flatRooms().forEach((room) => setRoomUnread(room.id, counts.get(room.id) || 0));
+    document.querySelectorAll("[data-unread-room]").forEach((badge) => {
+      const count = counts.get(badge.dataset.unreadRoom) || 0;
+      badge.textContent = count ? String(count) : "";
+    });
+    const notificationBadge = document.querySelector("[data-notification-count]");
+    if (notificationBadge) notificationBadge.textContent = activity.unreadNotificationCount ? String(activity.unreadNotificationCount) : "N";
+  } catch (_error) {
+    // A later poll will recover after temporary network or deployment interruptions.
+  }
 }
 
 function openModal(type) {
@@ -175,6 +225,11 @@ async function refreshAdminWorkspace(message) {
   await loadAdminOverview();
   state.modal = "workspace";
   render();
+}
+
+async function loadNotifications() {
+  const result = await api("/api/notifications");
+  state.notifications = result.notifications;
 }
 
 function closeModal() {
@@ -271,6 +326,9 @@ function sidebarHtml() {
             </div>
           </div>
           <div class="sidebar-icon-row">
+            <button class="icon-button" data-action="open-modal" data-modal="notifications" type="button" title="Notifications">
+              <span data-notification-count>${state.unreadNotificationCount || "N"}</span>
+            </button>
             ${state.user.is_admin ? `<button class="icon-button" data-action="open-modal" data-modal="project" type="button" title="New project">+</button>` : ""}
             ${state.user.is_admin || state.pendingInvites.length ? `
               <button class="icon-button" data-action="open-modal" data-modal="workspace" type="button" title="${state.user.is_admin ? "Admin workspace" : "Invitations"}">
@@ -300,6 +358,7 @@ function sidebarHtml() {
               ${project.subprojects.map((room) => `
                 <button class="chat-item ${room.id === state.currentRoomId ? "active" : ""}" data-action="open-room" data-room-id="${escapeHtml(room.id)}" type="button">
                   <span class="chat-title">${escapeHtml(room.name)}</span>
+                  <span class="unread-badge" data-unread-room="${escapeHtml(room.id)}">${room.unreadCount ? escapeHtml(room.unreadCount) : ""}</span>
                 </button>
               `).join("")}
             </div>
@@ -312,6 +371,8 @@ function sidebarHtml() {
 
 function messageHtml(message) {
   const self = message.author_id === state.user.id;
+  const readByOthers = (message.readBy || []).filter((reader) => reader.id !== state.user.id);
+  const receiptTotal = Math.max((state.currentRoom?.members.length || 1) - 1, 0);
   return `
     <article class="message-row ${self ? "self" : ""}">
       ${self ? "" : `<div class="message-avatar">${escapeHtml(initials(message.author_name))}</div>`}
@@ -325,6 +386,7 @@ function messageHtml(message) {
         </div>
         <p class="message-text">${escapeHtml(message.text)}</p>
         ${message.mentions.length ? `<div class="message-tags">${message.mentions.map((mention) => `<span>@${escapeHtml(mention.name)}</span>`).join("")}</div>` : ""}
+        ${self ? `<div class="read-receipt" title="${escapeHtml(readByOthers.map((reader) => reader.name).join(", ") || "Not read by teammates yet")}">${readByOthers.length ? `Seen ${readByOthers.length}/${receiptTotal}` : "Delivered"}</div>` : ""}
       </div>
     </article>
   `;
@@ -358,7 +420,7 @@ function mainHtml() {
           <button class="soft-button ${state.mainView === "chat" ? "is-active" : ""}" data-action="set-main-view" data-view="chat" type="button">Chat</button>
           <button class="soft-button ${state.mainView === "tasks" ? "is-active" : ""}" data-action="set-main-view" data-view="tasks" type="button">Tasks ${openTasks ? `(${openTasks})` : ""}</button>
           <button class="soft-button" data-action="open-modal" data-modal="details" type="button">Project details</button>
-          <button class="icon-button" data-action="refresh-room" type="button">↻</button>
+          <button class="icon-button" data-action="refresh-room" type="button" title="Refresh chat">R</button>
         </div>
       </header>
 
@@ -389,6 +451,7 @@ function mainHtml() {
                 </div>
                 <p>${escapeHtml(task.note)}</p>
                 <p class="task-meta">Assigned to ${escapeHtml(task.assignee_name)} / ${escapeHtml(task.status)}</p>
+                ${task.due_at ? `<p class="task-countdown" data-task-due="${escapeHtml(task.due_at)}" data-task-status="${escapeHtml(task.status)}">${escapeHtml(countdownText(task.due_at, task.status))}</p>` : ""}
                 <div class="task-actions">
                   <input class="task-status-input" id="task-update-${escapeHtml(task.id)}" placeholder="Write status update" ${disabled ? "disabled" : ""}>
                   <button class="save-status-button" data-action="task-update" data-task-id="${escapeHtml(task.id)}" type="button" ${disabled ? "disabled" : ""}>Save</button>
@@ -421,6 +484,7 @@ function mainHtml() {
             <select name="assigneeId" ${disabled ? "disabled" : ""}>
               ${state.currentRoom.members.map((member) => `<option value="${escapeHtml(member.id)}">${escapeHtml(member.name)}</option>`).join("")}
             </select>
+            <input name="dueAt" type="datetime-local" title="Task deadline" ${disabled ? "disabled" : ""}>
             <textarea name="note" rows="1" placeholder="Short task note" ${disabled ? "disabled" : ""}></textarea>
             <button class="pill-button" type="submit" ${disabled ? "disabled" : ""}>Create task</button>
           </form>
@@ -495,6 +559,7 @@ function tasksModalHtml() {
           <select name="assigneeId" ${disabled ? "disabled" : ""}>
             ${state.currentRoom.members.map((member) => `<option value="${escapeHtml(member.id)}">${escapeHtml(member.name)}</option>`).join("")}
           </select>
+          <input name="dueAt" type="datetime-local" title="Task deadline" ${disabled ? "disabled" : ""}>
           <textarea name="note" rows="2" placeholder="Short task note" ${disabled ? "disabled" : ""}></textarea>
           <button class="pill-button" type="submit" ${disabled ? "disabled" : ""}>Create task</button>
         </form>
@@ -512,6 +577,7 @@ function tasksModalHtml() {
               </div>
               <p>${escapeHtml(task.note)}</p>
               <p class="task-meta">Assigned to ${escapeHtml(task.assignee_name)} / ${escapeHtml(task.status)}</p>
+              ${task.due_at ? `<p class="task-countdown" data-task-due="${escapeHtml(task.due_at)}" data-task-status="${escapeHtml(task.status)}">${escapeHtml(countdownText(task.due_at, task.status))}</p>` : ""}
               <div class="task-actions">
                 <input class="task-status-input" id="task-update-${escapeHtml(task.id)}" placeholder="Write status update" ${disabled ? "disabled" : ""}>
                 <button class="save-status-button" data-action="task-update" data-task-id="${escapeHtml(task.id)}" type="button" ${disabled ? "disabled" : ""}>Save</button>
@@ -543,32 +609,40 @@ function memberDirectoryHtml(users, projects) {
           <div class="membership-list">
             ${user.projects.map((membership) => `
               <span class="membership-chip">
-                ${escapeHtml(membership.project_name)} · ${escapeHtml(membership.role)}${membership.access_scope === "container" ? " · container" : ""}
-                ${user.is_admin ? "" : `<button data-action="remove-project-member" data-user-id="${escapeHtml(user.id)}" data-project-id="${escapeHtml(membership.project_id)}" type="button" title="Remove project access">×</button>`}
+                ${escapeHtml(membership.project_name)} / ${escapeHtml(membership.role)}${membership.access_scope === "container" ? " / container" : ""}
+                ${user.is_admin ? "" : `<button data-action="remove-project-member" data-user-id="${escapeHtml(user.id)}" data-project-id="${escapeHtml(membership.project_id)}" type="button" title="Remove project access">x</button>`}
               </span>
             `).join("")}
             ${user.rooms.map((membership) => `
               <span class="membership-chip room-chip">
-                ${escapeHtml(membership.project_name)} / ${escapeHtml(membership.room_name)} · ${escapeHtml(membership.role)}
-                ${user.is_admin ? "" : `<button data-action="remove-room-member" data-user-id="${escapeHtml(user.id)}" data-room-id="${escapeHtml(membership.room_id)}" type="button" title="Remove chat access">×</button>`}
+                ${escapeHtml(membership.project_name)} / ${escapeHtml(membership.room_name)} / ${escapeHtml(membership.role)}
+                ${user.is_admin ? "" : `<button data-action="remove-room-member" data-user-id="${escapeHtml(user.id)}" data-room-id="${escapeHtml(membership.room_id)}" type="button" title="Remove chat access">x</button>`}
               </span>
             `).join("")}
             ${!user.projects.length && !user.rooms.length ? `<span class="meta-line">No project access</span>` : ""}
           </div>
-          ${user.is_admin ? `<p class="meta-line">The global admin always has full access and cannot be removed or demoted.</p>` : `
-            <form class="directory-assign-form" data-action="assign-member" data-user-id="${escapeHtml(user.id)}">
-              <select name="target" required ${projects.length ? "" : "disabled"}>
-                ${projects.flatMap((project) => [
-                  `<option value="project:${escapeHtml(project.id)}">${escapeHtml(project.name)} · entire project</option>`,
-                  ...project.rooms.map((room) => `<option value="room:${escapeHtml(project.id)}:${escapeHtml(room.id)}">${escapeHtml(project.name)} / ${escapeHtml(room.name)}</option>`)
-                ]).join("")}
-              </select>
-              <select name="role" required>
-                <option value="full">Full access</option>
-                <option value="readonly">Read only</option>
-              </select>
-              <button class="soft-button" type="submit" ${projects.length ? "" : "disabled"}>${user.approval_status === "pending" ? "Approve and assign" : "Add or update"}</button>
-            </form>
+          ${user.is_admin ? `
+            <div class="admin-role-row">
+              <p class="meta-line">Global admins have full management access everywhere.</p>
+              ${user.is_primary_admin ? `<span class="admin-badge">Protected owner</span>` : `<button class="danger-link" data-action="toggle-admin" data-user-id="${escapeHtml(user.id)}" data-is-admin="false" type="button">Remove admin</button>`}
+            </div>
+          ` : `
+            <div class="directory-member-actions">
+              <form class="directory-assign-form" data-action="assign-member" data-user-id="${escapeHtml(user.id)}">
+                <select name="target" required ${projects.length ? "" : "disabled"}>
+                  ${projects.flatMap((project) => [
+                    `<option value="project:${escapeHtml(project.id)}">${escapeHtml(project.name)} / entire project</option>`,
+                    ...project.rooms.map((room) => `<option value="room:${escapeHtml(project.id)}:${escapeHtml(room.id)}">${escapeHtml(project.name)} / ${escapeHtml(room.name)}</option>`)
+                  ]).join("")}
+                </select>
+                <select name="role" required>
+                  <option value="full">Full access</option>
+                  <option value="readonly">Read only</option>
+                </select>
+                <button class="soft-button" type="submit" ${projects.length ? "" : "disabled"}>${user.approval_status === "pending" ? "Approve and assign" : "Add or update"}</button>
+              </form>
+              <button class="soft-button admin-promote-button" data-action="toggle-admin" data-user-id="${escapeHtml(user.id)}" data-is-admin="true" type="button">Make admin</button>
+            </div>
           `}
         </article>
       `).join("")}
@@ -686,6 +760,36 @@ function workspaceModalHtml() {
   `;
 }
 
+function notificationsModalHtml() {
+  return `
+    <div class="modal-backdrop">
+      <div class="modal notifications-modal">
+        <div class="modal-head">
+          <div>
+            <h3>Notifications</h3>
+            <p class="modal-subtitle">Mentions, assigned tasks, access changes, and task updates.</p>
+          </div>
+          <button class="ghost-button" data-action="close-modal" type="button">Close</button>
+        </div>
+        <div class="section-head">
+          <strong>Recent activity</strong>
+          <button class="soft-button" data-action="read-all-notifications" type="button">Mark all read</button>
+        </div>
+        <div class="notification-list">
+          ${state.notifications.length ? state.notifications.map((notification) => `
+            <button class="notification-item ${notification.is_read ? "" : "unread"}" data-action="open-notification" data-notification-id="${escapeHtml(notification.id)}" data-room-id="${escapeHtml(notification.room_id || "")}" type="button">
+              <span class="notification-type">${escapeHtml(notification.type.replace("_", " "))}</span>
+              <strong>${escapeHtml(notification.title)}</strong>
+              <span>${escapeHtml(notification.body)}</span>
+              <time>${escapeHtml(new Date(notification.created_at).toLocaleString())}</time>
+            </button>
+          `).join("") : `<div class="mini-empty">No notifications yet.</div>`}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function modalHtml() {
   if (!state.modal || !state.user) return "";
 
@@ -699,6 +803,7 @@ function modalHtml() {
   if (state.modal === "details") return detailsModalHtml();
   if (state.modal === "tasks") return tasksModalHtml();
   if (state.modal === "workspace") return workspaceModalHtml();
+  if (state.modal === "notifications") return notificationsModalHtml();
 
   const bodies = {
     project: `
@@ -765,6 +870,7 @@ document.addEventListener("click", async (event) => {
 
     if (action === "open-modal") {
       if (actionTarget.dataset.modal === "workspace") await loadAdminOverview();
+      if (actionTarget.dataset.modal === "notifications") await loadNotifications();
       openModal(actionTarget.dataset.modal);
     }
 
@@ -823,6 +929,38 @@ document.addEventListener("click", async (event) => {
       if (!window.confirm("Remove this member from this subproject chat?")) return;
       await api(`/api/admin/users/${actionTarget.dataset.userId}/rooms/${actionTarget.dataset.roomId}`, { method: "DELETE" });
       await refreshAdminWorkspace("Subproject access removed.");
+    }
+
+    if (action === "toggle-admin") {
+      const makeAdmin = actionTarget.dataset.isAdmin === "true";
+      if (!makeAdmin && !window.confirm("Remove this user's global administrator privileges?")) return;
+      await api(`/api/admin/users/${actionTarget.dataset.userId}/admin`, {
+        method: "PATCH",
+        body: JSON.stringify({ isAdmin: makeAdmin })
+      });
+      await refreshAdminWorkspace(makeAdmin ? "Global administrator access granted." : "Global administrator access removed.");
+    }
+
+    if (action === "read-all-notifications") {
+      await api("/api/notifications/read", { method: "PATCH", body: JSON.stringify({}) });
+      state.unreadNotificationCount = 0;
+      await loadNotifications();
+      render();
+    }
+
+    if (action === "open-notification") {
+      await api("/api/notifications/read", {
+        method: "PATCH",
+        body: JSON.stringify({ id: actionTarget.dataset.notificationId })
+      });
+      state.unreadNotificationCount = Math.max(0, state.unreadNotificationCount - 1);
+      if (actionTarget.dataset.roomId) {
+        state.modal = null;
+        await loadRoom(actionTarget.dataset.roomId);
+      } else {
+        await loadNotifications();
+        render();
+      }
     }
 
     if (action === "accept-invite") {
@@ -969,6 +1107,9 @@ document.addEventListener("submit", async (event) => {
     alert(error.message);
   }
 });
+
+window.setInterval(updateCountdowns, 1000);
+window.setInterval(pollActivity, 15000);
 
 bootstrap().catch((error) => {
   app.innerHTML = `

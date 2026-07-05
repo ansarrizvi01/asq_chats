@@ -1,6 +1,6 @@
 # ProjectChat Deployment and Team Instruction Manual
 
-Version: 1.0  
+Version: 1.1  
 Deployment target: Vercel  
 Database: Neon PostgreSQL
 
@@ -11,23 +11,26 @@ ProjectChat is a chat-first project workspace:
 - A **project** is a container, such as `Website Launch` or `Client ABC`.
 - A **subproject** is a working chat inside that project, such as `Landing Page`, `Content`, or `Client Approval`.
 - Messages can be posted as updates, tasks, or alerts.
-- Tasks have an assignee, status, notes, and status updates.
-- Full-access members can write, create tasks, change task status, and invite people.
+- Tasks have an assignee, status, notes, status updates, and an optional live deadline countdown.
+- Full-access members can write, create tasks, and change task status.
 - Read-only members can follow the work without changing it.
 
 The application contains no demo users, demo projects, demo messages, or default passwords. The first real user creates an account after deployment.
 
 ## 1.1 Administrator Governance
 
-ProjectChat uses one global administrator model:
+ProjectChat supports multiple global administrators:
 
 - The first account is promoted automatically when `ADMIN_EMAIL` is not configured.
-- `ADMIN_EMAIL` can explicitly identify the administrator's email.
+- `ADMIN_EMAIL` identifies the protected primary owner.
+- Any global admin can promote an approved or pending account to global admin from **Admin workspace > Members**.
+- Secondary admins receive the same project, subproject, invitation, approval, deletion, task-deletion, and member-management privileges.
+- A secondary admin can be demoted later. The protected primary owner cannot be demoted, and the system never permits removing the last remaining admin.
 - Every later open signup remains pending and cannot enter the workspace.
-- The administrator approves each pending account and assigns one project plus a full or read-only role.
-- Only the administrator can create projects, create subprojects, issue invitations, approve accounts, delete chats, or delete projects.
-- The administrator is automatically added with full access to every project and subproject.
-- Full-access members can chat and manage tasks in assigned workspaces, but they cannot create independent teams or become administrators.
+- An admin approves each pending account and assigns one project plus a full or read-only role.
+- Only global admins can create projects, create subprojects, issue invitations, approve accounts, delete tasks/chats/projects, promote admins, or manage membership.
+- Every global admin is automatically added with full access to every project and subproject.
+- Full-access members can chat and manage tasks in assigned workspaces, but they cannot create independent teams or promote administrators.
 
 Deleting a subproject chat permanently deletes its messages, tasks, updates, memberships, and room invitations. Deleting a project permanently deletes every subproject and all contained data. Both actions require administrator confirmation in the interface.
 
@@ -50,7 +53,9 @@ Neon PostgreSQL
     +-- projects and project memberships
     +-- subprojects and room memberships
     +-- messages and mentions
+    +-- message and room read records
     +-- tasks and task updates
+    +-- notification inboxes
     +-- invitations and access roles
 ```
 
@@ -294,7 +299,31 @@ Assigning an entire project updates access to every current subproject and cause
 
 Use the `×` beside a project or chat membership to remove access. Removing project access also removes all room access in that project. Removing one chat affects only that chat; if it was the user's last specific chat in that project, the empty container access is also removed. These actions preserve the user account, historical messages, authored tasks, and activity records.
 
-The global administrator cannot be removed or demoted and remains full-access everywhere.
+Global administrators cannot be removed from projects or subprojects and remain full-access everywhere. The primary owner cannot be demoted; secondary admins can be demoted by another admin.
+
+### Notifications, Unread Chats, and Read Receipts
+
+The `N` control in the sidebar opens the notification center. Its number indicates unread notifications. Notifications are created for:
+
+- Mentions in chat
+- New task assignments
+- Task status updates written by another member
+- Project/subproject access assignments
+- Administrator promotion or demotion
+
+Select a notification to mark it read and open its related chat when available. **Mark all read** clears the notification count. The app refreshes notification and chat-unread badges approximately every 15 seconds without interrupting message typing.
+
+Each subproject name shows an unread badge when another member posts after your last visit. Opening that chat marks its existing messages read. Messages you authored display **Delivered** until teammates open the chat, then display **Seen X/Y**. Hover over the receipt to see the readers' names.
+
+### Task Deadline Countdown
+
+When creating a task, the deadline field is optional. Choose a local date and time to display a live countdown:
+
+- **Due in** shows remaining days, hours, minutes, or seconds.
+- **Overdue by** appears in red after the deadline.
+- Completed tasks retain their recorded deadline without continuing an overdue countdown.
+
+The countdown is visual and updates every second while the app is open. Task assignment still creates an in-app notification even when no deadline is selected.
 
 ## 13. Daily Team Workflow
 
@@ -424,6 +453,20 @@ git push
 ```
 
 Confirm Vercel deploys the commit and `ADMIN_EMAIL` still exists in the Production environment. In production, test one disposable task deletion, one disposable project deletion, and reassignment of an existing member into a new project. The migration preserves existing accounts, memberships, projects, chats, messages, and tasks while adding the membership-scope field required for specific-chat assignments.
+
+### Deploy multiple admins, notifications, receipts, and countdowns
+
+```powershell
+vercel env pull .env.local --environment=production
+npm install
+npm test
+npm run db:migrate
+git add .
+git commit -m "Add multiple admins notifications receipts and task countdowns"
+git push
+```
+
+The migration adds only new tables/columns and preserves existing users, admins, projects, messages, memberships, and tasks. After deployment, promote a disposable test account to secondary admin, verify it can open Admin workspace, then demote it. Test a mention notification, open the mentioned chat to verify unread clearing/read receipts, and create a short disposable task deadline to observe the countdown.
 
 ## 18. Troubleshooting
 

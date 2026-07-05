@@ -9,9 +9,8 @@ async function migrate() {
   if (adminEmail) {
     await pool.query(
       `UPDATE users
-       SET is_admin = (email = $1),
-           approval_status = CASE WHEN email = $1 THEN 'approved' ELSE approval_status END
-       WHERE is_admin = TRUE OR email = $1`,
+       SET is_admin = TRUE, approval_status = 'approved'
+       WHERE email = $1`,
       [adminEmail]
     );
   }

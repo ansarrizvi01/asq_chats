@@ -115,6 +115,67 @@ async function run() {
     "read-only write restriction"
   );
 
+  await expectStatus(
+    await owner.post(`/api/rooms/${roomA}/messages`).send({
+      kind: "update",
+      text: "Please review the launch checklist.",
+      mentionIds: [fullId]
+    }),
+    200,
+    "mentioned message creation"
+  );
+  let fullActivity = await expectStatus(await fullMember.get("/api/activity"), 200, "unread activity summary");
+  if (!fullActivity.body.rooms.some((room) => room.roomId === roomA && room.unreadCount > 0)) {
+    throw new Error("new chat activity did not create an unread room count");
+  }
+  let fullNotifications = await expectStatus(await fullMember.get("/api/notifications"), 200, "notification list");
+  if (!fullNotifications.body.notifications.some((notification) => notification.type === "mention")) {
+    throw new Error("mention notification was not created");
+  }
+
+  await expectStatus(await fullMember.get(`/api/rooms/${roomA}`), 200, "mark room read");
+  fullActivity = await expectStatus(await fullMember.get("/api/activity"), 200, "activity after reading");
+  if (fullActivity.body.rooms.find((room) => room.roomId === roomA)?.unreadCount !== 0) {
+    throw new Error("opening the room did not clear its unread count");
+  }
+  const ownerRoomAfterRead = await expectStatus(await owner.get(`/api/rooms/${roomA}`), 200, "read receipt refresh");
+  const mentionedMessage = ownerRoomAfterRead.body.messages.find((message) => message.text === "Please review the launch checklist.");
+  if (!mentionedMessage?.readBy.some((reader) => reader.id === fullId)) {
+    throw new Error("message read receipt did not include the teammate who opened the room");
+  }
+
+  const timedTask = await expectStatus(
+    await owner.post(`/api/rooms/${roomA}/tasks`).send({
+      title: "Timed review",
+      note: "Complete before the countdown expires",
+      assigneeId: fullId,
+      dueAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    }),
+    200,
+    "timed task creation"
+  );
+  const timedTaskDetails = await expectStatus(await owner.get(`/api/rooms/${roomA}`), 200, "timed task details");
+  if (!timedTaskDetails.body.tasks.find((task) => task.id === timedTask.body.taskId)?.due_at) {
+    throw new Error("task deadline was not persisted");
+  }
+  await expectStatus(
+    await owner.post(`/api/tasks/${timedTask.body.taskId}/updates`).send({ text: "Deadline confirmed." }),
+    200,
+    "task update notification trigger"
+  );
+  fullNotifications = await expectStatus(await fullMember.get("/api/notifications"), 200, "task notifications");
+  if (!fullNotifications.body.notifications.some((notification) => notification.type === "task") ||
+      !fullNotifications.body.notifications.some((notification) => notification.type === "task_update")) {
+    throw new Error("task assignment or task update notification was not created");
+  }
+  await expectStatus(
+    await fullMember.patch("/api/notifications/read").send({}),
+    200,
+    "mark notifications read"
+  );
+  fullActivity = await expectStatus(await fullMember.get("/api/activity"), 200, "notification count after reading");
+  if (fullActivity.body.unreadNotificationCount !== 0) throw new Error("mark-all did not clear notification count");
+
   await expectStatus(await anonymous.delete(`/api/tasks/${taskId}`), 401, "anonymous task deletion restriction");
   await expectStatus(await fullMember.delete(`/api/tasks/${taskId}`), 403, "full-member task deletion restriction");
   await expectStatus(await readonlyMember.delete(`/api/tasks/${taskId}`), 403, "read-only task deletion restriction");
@@ -127,6 +188,33 @@ async function run() {
   if (Number(taskAfterDelete.rows[0].count) || Number(updatesAfterDelete.rows[0].count)) {
     throw new Error("individual task deletion left task data or orphan updates");
   }
+
+  await expectStatus(
+    await owner.patch(`/api/admin/users/${fullId}/admin`).send({ isAdmin: true }),
+    200,
+    "secondary admin promotion"
+  );
+  const secondaryAdminProject = await expectStatus(
+    await fullMember.post("/api/projects").send({ name: "Secondary Admin Project", description: "Admin parity test" }),
+    200,
+    "secondary admin project creation"
+  );
+  await expectStatus(
+    await owner.patch(`/api/admin/users/${ownerId}/admin`).send({ isAdmin: false }),
+    400,
+    "primary admin demotion protection"
+  );
+  await expectStatus(
+    await owner.patch(`/api/admin/users/${fullId}/admin`).send({ isAdmin: false }),
+    200,
+    "secondary admin demotion"
+  );
+  await expectStatus(await fullMember.get("/api/admin/users"), 403, "demoted admin restriction");
+  await expectStatus(
+    await owner.delete(`/api/projects/${secondaryAdminProject.body.projectId}`),
+    200,
+    "secondary admin test project cleanup"
+  );
 
   const projectB = (await createProject(owner, "Project B")).body.projectId;
   const roomB1 = (await createRoom(owner, projectB, "Room B1")).body.roomId;
@@ -244,7 +332,7 @@ async function run() {
   const finalDirectory = await expectStatus(await owner.get("/api/admin/users"), 200, "final member directory");
   if (finalDirectory.body.users.length !== 4) throw new Error("member directory lost an account during project operations");
 
-  console.log("Smoke test passed: task deletion, member directory, direct assignment, roles, removals, and account preservation.");
+  console.log("Smoke test passed: admins, notifications, read receipts, task countdowns, memberships, and deletion rules.");
 }
 
 run()

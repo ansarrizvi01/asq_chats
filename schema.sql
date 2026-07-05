@@ -87,6 +87,20 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS message_reads (
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (message_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS room_reads (
+  room_id TEXT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  last_read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (room_id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS message_mentions (
   message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -101,15 +115,30 @@ CREATE TABLE IF NOT EXISTS tasks (
   assignee_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   status TEXT NOT NULL CHECK (status IN ('open', 'done')),
   created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  due_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS task_updates (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   text TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL CHECK (type IN ('mention', 'task', 'task_update', 'assignment', 'system')),
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  room_id TEXT REFERENCES rooms(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  is_read BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -122,5 +151,8 @@ CREATE INDEX IF NOT EXISTS room_members_user_id_idx ON room_members(user_id);
 CREATE INDEX IF NOT EXISTS invites_email_status_idx ON invites(email, status);
 CREATE INDEX IF NOT EXISTS invites_expires_at_idx ON invites(expires_at);
 CREATE INDEX IF NOT EXISTS messages_room_created_idx ON messages(room_id, created_at);
+CREATE INDEX IF NOT EXISTS message_reads_user_id_idx ON message_reads(user_id);
+CREATE INDEX IF NOT EXISTS room_reads_user_id_idx ON room_reads(user_id);
 CREATE INDEX IF NOT EXISTS tasks_room_status_idx ON tasks(room_id, status, updated_at);
 CREATE INDEX IF NOT EXISTS task_updates_task_created_idx ON task_updates(task_id, created_at);
+CREATE INDEX IF NOT EXISTS notifications_user_read_created_idx ON notifications(user_id, is_read, created_at);

@@ -531,6 +531,10 @@ p {
   background: transparent;
   position: relative;
   color: white;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .chat-item::before {
@@ -566,6 +570,22 @@ p {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: white;
+}
+
+.unread-badge {
+  min-width: 18px;
+  min-height: 18px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  color: #082f2b;
+  background: #5eead4;
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-align: center;
+}
+
+.unread-badge:empty {
+  display: none;
 }
 
 .sidebar-empty {
@@ -719,6 +739,12 @@ p {
   color: rgba(255, 255, 255, 0.84);
 }
 
+.read-receipt {
+  justify-self: end;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 0.7rem;
+}
+
 .message-text {
   line-height: 1.58;
 }
@@ -749,7 +775,7 @@ p {
 }
 
 .inline-task-form {
-  grid-template-columns: 1.1fr 0.8fr 1.2fr auto;
+  grid-template-columns: 1fr 0.75fr 165px 1fr auto;
 }
 
 .message-form input,
@@ -934,6 +960,70 @@ p {
   align-items: center;
 }
 
+.directory-member-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.admin-role-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.admin-promote-button {
+  white-space: nowrap;
+}
+
+.notification-list {
+  max-height: 520px;
+  overflow-y: auto;
+  display: grid;
+  gap: 7px;
+}
+
+.notification-item {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: var(--surface-soft);
+  text-align: left;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 3px 9px;
+}
+
+.notification-item.unread {
+  border-color: rgba(15, 118, 110, 0.28);
+  background: var(--accent-soft);
+}
+
+.notification-item > span:not(.notification-type) {
+  grid-column: 2 / -1;
+  color: var(--muted);
+}
+
+.notification-item time {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.notification-type {
+  grid-row: 1 / span 2;
+  align-self: start;
+  padding: 4px 6px;
+  border-radius: 7px;
+  color: var(--accent-strong);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+}
+
 .approval-row {
   display: grid;
   grid-template-columns: minmax(150px, 1.2fr) minmax(150px, 1fr) 120px auto;
@@ -1023,7 +1113,7 @@ p {
 }
 
 .task-form {
-  grid-template-columns: 1.1fr 0.85fr 1.35fr auto;
+  grid-template-columns: 1fr 0.75fr 165px 1fr auto;
   align-items: center;
 }
 
@@ -1049,6 +1139,21 @@ p {
 
 .task-card.done {
   background: linear-gradient(180deg, #f3fff7 0%, #ecfdf3 100%);
+}
+
+.task-countdown {
+  width: fit-content;
+  padding: 5px 8px;
+  border-radius: 8px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.task-countdown.overdue {
+  color: #b42318;
+  background: #feeceb;
 }
 
 .task-actions {
@@ -1088,7 +1193,8 @@ p {
   .inline-task-form,
   .details-grid,
   .approval-row,
-  .directory-assign-form {
+  .directory-assign-form,
+  .directory-member-actions {
     grid-template-columns: 1fr;
   }
 }

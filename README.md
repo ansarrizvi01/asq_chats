@@ -2,9 +2,11 @@
 
 ProjectChat is a WhatsApp-style project workspace. Projects are containers; each subproject is a focused chat with tasks, mentions, status updates, and full or read-only access.
 
-The workspace has one global administrator. New open signups remain pending until the administrator approves them and assigns a project. Only the administrator can create or delete projects/chats and invite or approve members.
+The workspace supports multiple global administrators with identical management privileges. `ADMIN_EMAIL` remains the protected primary owner. New open signups remain pending until an admin approves them and assigns a project.
 
 The Admin workspace includes a global member directory for direct project/subproject assignment, role changes, and access removal without deleting accounts. Individual task deletion is permanent and admin-only.
+
+Chats include unread badges and sender-side read receipts. The notification center tracks mentions, task assignments, task updates, and access changes. Tasks can have optional deadlines with live countdowns.
 
 ## Production stack
 

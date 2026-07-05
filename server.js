@@ -84,6 +84,32 @@ function publicOrigin(req) {
   return String(process.env.APP_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
 }
 
+async function createNotification(executor, { userId, type, title, body = "", roomId = null, taskId = null }) {
+  await executor.query(
+    `INSERT INTO notifications (id, user_id, type, title, body, room_id, task_id, is_read, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8)`,
+    [id(), userId, type, title, text(body, 1000), roomId, taskId, nowIso()]
+  );
+}
+
+async function markRoomRead(roomId, userId) {
+  const readAt = nowIso();
+  await transaction(async (client) => {
+    await client.query(
+      `INSERT INTO room_reads (room_id, user_id, last_read_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (room_id, user_id) DO UPDATE SET last_read_at = EXCLUDED.last_read_at`,
+      [roomId, userId, readAt]
+    );
+    await client.query(
+      `INSERT INTO message_reads (message_id, user_id, read_at)
+       SELECT id, $1, $2::timestamptz FROM messages WHERE room_id = $3
+       ON CONFLICT (message_id, user_id) DO UPDATE SET read_at = EXCLUDED.read_at`,
+      [userId, readAt, roomId]
+    );
+  });
+}
+
 async function setSession(res, userId) {
   const sessionToken = token();
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -115,9 +141,8 @@ async function getAuthUser(req) {
   if (configuredAdmin) {
     await query(
       `UPDATE users
-       SET is_admin = (email = $1),
-           approval_status = CASE WHEN email = $1 THEN 'approved' ELSE approval_status END
-       WHERE is_admin = TRUE OR email = $1`,
+       SET is_admin = TRUE, approval_status = 'approved'
+       WHERE email = $1`,
       [configuredAdmin]
     );
   }
@@ -215,7 +240,7 @@ async function getManageableUser(userId) {
 async function assignUserAccess({ userId, projectId, roomId, role }) {
   const [user, projectResult] = await Promise.all([
     getManageableUser(userId),
-    query("SELECT id FROM projects WHERE id = $1", [projectId])
+    query("SELECT id, name FROM projects WHERE id = $1", [projectId])
   ]);
   if (!user) return { error: "User not found.", status: 404 };
   if (user.is_admin) return { error: "The global administrator already has full access everywhere.", status: 400 };
@@ -266,6 +291,13 @@ async function assignUserAccess({ userId, projectId, roomId, role }) {
        WHERE email = $2 AND project_id = $3 AND status = 'pending'`,
       [assignedAt, user.email, projectId]
     );
+    await createNotification(client, {
+      userId,
+      type: "assignment",
+      title: "Workspace access updated",
+      body: `${role === "full" ? "Full" : "Read-only"} access was assigned in ${projectResult.rows[0].name}.`,
+      roomId
+    });
   });
   return { ok: true };
 }
@@ -316,7 +348,7 @@ async function summarizeWorkspace(userId) {
     );
 
     const rooms = await Promise.all(roomsResult.rows.map(async (room) => {
-      const [lastMessageResult, openTasksResult] = await Promise.all([
+      const [lastMessageResult, openTasksResult, unreadResult] = await Promise.all([
         query(
           `SELECT m.text, m.created_at, u.name AS author_name
            FROM messages m
@@ -326,12 +358,21 @@ async function summarizeWorkspace(userId) {
            LIMIT 1`,
           [room.id]
         ),
-        query(`SELECT COUNT(*) AS count FROM tasks WHERE room_id = $1 AND status = 'open'`, [room.id])
+        query(`SELECT COUNT(*) AS count FROM tasks WHERE room_id = $1 AND status = 'open'`, [room.id]),
+        query(
+          `SELECT COUNT(*) AS count
+           FROM messages m
+           LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = $2
+           WHERE m.room_id = $1 AND m.author_id <> $2
+             AND (rr.last_read_at IS NULL OR m.created_at > rr.last_read_at)`,
+          [room.id, userId]
+        )
       ]);
       return {
         ...room,
         lastMessage: lastMessageResult.rows[0] || null,
-        openTasks: Number(openTasksResult.rows[0].count)
+        openTasks: Number(openTasksResult.rows[0].count),
+        unreadCount: Number(unreadResult.rows[0].count)
       };
     }));
 
@@ -349,6 +390,7 @@ async function roomDetails(roomId, userId) {
   );
   const room = roomResult.rows[0];
   if (!room) return null;
+  await markRoomRead(roomId, userId);
 
   const [membership, membersResult, messagesResult, tasksResult, invitesResult] = await Promise.all([
     getRoomMembership(roomId, userId),
@@ -389,7 +431,7 @@ async function roomDetails(roomId, userId) {
 
   const messageIds = messagesResult.rows.map((message) => message.id);
   const taskIds = tasksResult.rows.map((taskRecord) => taskRecord.id);
-  const [mentionsResult, updatesResult] = await Promise.all([
+  const [mentionsResult, updatesResult, readsResult] = await Promise.all([
     messageIds.length
       ? query(
           `SELECT mm.message_id, u.id, u.name
@@ -409,6 +451,16 @@ async function roomDetails(roomId, userId) {
            ORDER BY tu.created_at DESC`,
           [taskIds]
         )
+      : Promise.resolve({ rows: [] }),
+    messageIds.length
+      ? query(
+          `SELECT mr.message_id, mr.user_id AS id, u.name, mr.read_at
+           FROM message_reads mr
+           JOIN users u ON u.id = mr.user_id
+           WHERE mr.message_id = ANY($1::text[])
+           ORDER BY mr.read_at ASC`,
+          [messageIds]
+        )
       : Promise.resolve({ rows: [] })
   ]);
 
@@ -423,6 +475,12 @@ async function roomDetails(roomId, userId) {
     const list = updatesByTask.get(update.task_id) || [];
     list.push(update);
     updatesByTask.set(update.task_id, list);
+  });
+  const readsByMessage = new Map();
+  readsResult.rows.forEach((read) => {
+    const list = readsByMessage.get(read.message_id) || [];
+    list.push({ id: read.id, name: read.name, read_at: read.read_at });
+    readsByMessage.set(read.message_id, list);
   });
 
   return {
@@ -439,7 +497,8 @@ async function roomDetails(roomId, userId) {
     members: membersResult.rows,
     messages: messagesResult.rows.map((message) => ({
       ...message,
-      mentions: mentionsByMessage.get(message.id) || []
+      mentions: mentionsByMessage.get(message.id) || [],
+      readBy: readsByMessage.get(message.id) || []
     })),
     tasks: tasksResult.rows.map((taskRecord) => ({
       ...taskRecord,
@@ -509,7 +568,7 @@ app.get("/api/me", asyncHandler(async (req, res) => {
 
 app.get("/api/bootstrap", requireAuth, asyncHandler(async (req, res) => {
   if (req.user.is_admin) await ensureAdminMemberships(req.user.id);
-  const [workspace, pendingInvitesResult, pendingUsersResult] = await Promise.all([
+  const [workspace, pendingInvitesResult, pendingUsersResult, unreadNotificationsResult] = await Promise.all([
     summarizeWorkspace(req.user.id),
     query(
       `SELECT i.id, i.token, i.email, i.role, i.status, i.created_at,
@@ -523,14 +582,55 @@ app.get("/api/bootstrap", requireAuth, asyncHandler(async (req, res) => {
     ),
     req.user.is_admin
       ? query("SELECT COUNT(*) AS count FROM users WHERE approval_status = 'pending'")
-      : Promise.resolve({ rows: [{ count: 0 }] })
+      : Promise.resolve({ rows: [{ count: 0 }] }),
+    query("SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = FALSE", [req.user.id])
   ]);
   res.json({
     user: req.user,
     workspace,
     pendingInvites: pendingInvitesResult.rows,
-    pendingApprovalCount: Number(pendingUsersResult.rows[0].count)
+    pendingApprovalCount: Number(pendingUsersResult.rows[0].count),
+    unreadNotificationCount: Number(unreadNotificationsResult.rows[0].count)
   });
+}));
+
+app.get("/api/notifications", requireAuth, asyncHandler(async (req, res) => {
+  const result = await query(
+    `SELECT id, type, title, body, room_id, task_id, is_read, created_at
+     FROM notifications WHERE user_id = $1
+     ORDER BY created_at DESC LIMIT 100`,
+    [req.user.id]
+  );
+  res.json({ notifications: result.rows });
+}));
+
+app.patch("/api/notifications/read", requireAuth, asyncHandler(async (req, res) => {
+  const notificationId = text(req.body.id, 100) || null;
+  if (notificationId) {
+    await query("UPDATE notifications SET is_read = TRUE WHERE id = $1 AND user_id = $2", [notificationId, req.user.id]);
+  } else {
+    await query("UPDATE notifications SET is_read = TRUE WHERE user_id = $1", [req.user.id]);
+  }
+  res.json({ ok: true });
+}));
+
+app.get("/api/activity", requireAuth, asyncHandler(async (req, res) => {
+  const [roomsResult, notificationsResult] = await Promise.all([
+    query("SELECT room_id FROM room_members WHERE user_id = $1", [req.user.id]),
+    query("SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = FALSE", [req.user.id])
+  ]);
+  const rooms = await Promise.all(roomsResult.rows.map(async ({ room_id: roomId }) => {
+    const unreadResult = await query(
+      `SELECT COUNT(*) AS count
+       FROM messages m
+       LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = $2
+       WHERE m.room_id = $1 AND m.author_id <> $2
+         AND (rr.last_read_at IS NULL OR m.created_at > rr.last_read_at)`,
+      [roomId, req.user.id]
+    );
+    return { roomId, unreadCount: Number(unreadResult.rows[0].count) };
+  }));
+  res.json({ unreadNotificationCount: Number(notificationsResult.rows[0].count), rooms });
 }));
 
 app.get("/api/admin/overview", requireAdmin, asyncHandler(async (_req, res) => {
@@ -599,10 +699,39 @@ app.get("/api/admin/users", requireAdmin, asyncHandler(async (_req, res) => {
   res.json({
     users: usersResult.rows.map((user) => ({
       ...user,
+      is_primary_admin: user.email === normalizedEmail(process.env.ADMIN_EMAIL),
       projects: projectsByUser.get(user.id) || [],
       rooms: roomsByUser.get(user.id) || []
     }))
   });
+}));
+
+app.patch("/api/admin/users/:userId/admin", requireAdmin, asyncHandler(async (req, res) => {
+  const user = await getManageableUser(req.params.userId);
+  if (!user) return res.status(404).json({ error: "User not found." });
+  const makeAdmin = req.body.isAdmin === true;
+  const primaryAdminEmail = normalizedEmail(process.env.ADMIN_EMAIL);
+  if (!makeAdmin && user.email === primaryAdminEmail) {
+    return res.status(400).json({ error: "The primary administrator cannot be demoted." });
+  }
+  if (!makeAdmin && user.is_admin) {
+    const admins = await query("SELECT COUNT(*) AS count FROM users WHERE is_admin = TRUE");
+    if (Number(admins.rows[0].count) <= 1) {
+      return res.status(400).json({ error: "At least one global administrator is required." });
+    }
+  }
+  await query(
+    "UPDATE users SET is_admin = $1, approval_status = CASE WHEN $1 THEN 'approved' ELSE approval_status END WHERE id = $2",
+    [makeAdmin, user.id]
+  );
+  if (makeAdmin) await ensureAdminMemberships(user.id);
+  await createNotification({ query }, {
+    userId: user.id,
+    type: "system",
+    title: makeAdmin ? "Administrator access granted" : "Administrator access removed",
+    body: makeAdmin ? "You now have full global administrator privileges." : "Your account remains approved without administrator privileges."
+  });
+  res.json({ ok: true });
 }));
 
 app.post("/api/admin/users/:userId/approve", requireAdmin, asyncHandler(async (req, res) => {
@@ -858,13 +987,30 @@ app.post("/api/rooms/:roomId/messages", requireAuth, requireRoomFullAccess, asyn
       `INSERT INTO messages (id, room_id, author_id, kind, text, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
       [messageId, req.params.roomId, req.user.id, kind, messageText, createdAt]
     );
+    await client.query(
+      "INSERT INTO message_reads (message_id, user_id, read_at) VALUES ($1, $2, $3)",
+      [messageId, req.user.id, createdAt]
+    );
     for (const memberId of mentionIds) {
+      const member = await client.query(
+        "SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2",
+        [req.params.roomId, memberId]
+      );
+      if (!member.rows[0]) continue;
       await client.query(
         `INSERT INTO message_mentions (message_id, user_id)
-         SELECT $1, user_id FROM room_members WHERE room_id = $2 AND user_id = $3
-         ON CONFLICT DO NOTHING`,
-        [messageId, req.params.roomId, memberId]
+         VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [messageId, memberId]
       );
+      if (memberId !== req.user.id) {
+        await createNotification(client, {
+          userId: memberId,
+          type: "mention",
+          title: `${req.user.name} mentioned you`,
+          body: messageText,
+          roomId: req.params.roomId
+        });
+      }
     }
   });
   res.json({ ok: true });
@@ -874,6 +1020,9 @@ app.post("/api/rooms/:roomId/tasks", requireAuth, requireRoomFullAccess, asyncHa
   const title = text(req.body.title, 200);
   const note = text(req.body.note, 2000);
   const assigneeId = text(req.body.assigneeId, 100);
+  const dueDate = req.body.dueAt ? new Date(req.body.dueAt) : null;
+  const dueAt = dueDate && Number.isFinite(dueDate.getTime()) ? dueDate.toISOString() : null;
+  if (req.body.dueAt && !dueAt) return res.status(400).json({ error: "Task deadline is invalid." });
   if (!title || !assigneeId) return res.status(400).json({ error: "Task title and assignee are required." });
 
   const memberResult = await query(
@@ -883,12 +1032,13 @@ app.post("/api/rooms/:roomId/tasks", requireAuth, requireRoomFullAccess, asyncHa
   if (!memberResult.rows[0]) return res.status(400).json({ error: "Assignee must be a member of this room." });
 
   const taskId = id();
+  const taskMessageId = id();
   const createdAt = nowIso();
   await transaction(async (client) => {
     await client.query(
-      `INSERT INTO tasks (id, room_id, title, note, assignee_id, status, created_by, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, 'open', $6, $7, $7)`,
-      [taskId, req.params.roomId, title, note, assigneeId, req.user.id, createdAt]
+      `INSERT INTO tasks (id, room_id, title, note, assignee_id, status, created_by, due_at, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, 'open', $6, $7, $8, $8)`,
+      [taskId, req.params.roomId, title, note, assigneeId, req.user.id, dueAt, createdAt]
     );
     await client.query(
       `INSERT INTO task_updates (id, task_id, author_id, text, created_at) VALUES ($1, $2, $3, $4, $5)`,
@@ -896,8 +1046,22 @@ app.post("/api/rooms/:roomId/tasks", requireAuth, requireRoomFullAccess, asyncHa
     );
     await client.query(
       `INSERT INTO messages (id, room_id, author_id, kind, text, created_at) VALUES ($1, $2, $3, 'task', $4, $5)`,
-      [id(), req.params.roomId, req.user.id, `Created task "${title}".`, createdAt]
+      [taskMessageId, req.params.roomId, req.user.id, `Created task "${title}".`, createdAt]
     );
+    await client.query(
+      "INSERT INTO message_reads (message_id, user_id, read_at) VALUES ($1, $2, $3)",
+      [taskMessageId, req.user.id, createdAt]
+    );
+    if (assigneeId !== req.user.id) {
+      await createNotification(client, {
+        userId: assigneeId,
+        type: "task",
+        title: `New task: ${title}`,
+        body: note || "A new task was assigned to you.",
+        roomId: req.params.roomId,
+        taskId
+      });
+    }
   });
   res.json({ ok: true, taskId });
 }));
@@ -950,6 +1114,16 @@ app.post("/api/tasks/:taskId/updates", requireAuth, asyncHandler(async (req, res
       `INSERT INTO messages (id, room_id, author_id, kind, text, created_at) VALUES ($1, $2, $3, 'update', $4, $5)`,
       [id(), task.room_id, req.user.id, `Task update on "${task.title}": ${updateText}`, createdAt]
     );
+    if (task.assignee_id !== req.user.id) {
+      await createNotification(client, {
+        userId: task.assignee_id,
+        type: "task_update",
+        title: `Task updated: ${task.title}`,
+        body: updateText,
+        roomId: task.room_id,
+        taskId: task.id
+      });
+    }
   });
   res.json({ ok: true });
 }));
