@@ -84,8 +84,23 @@ CREATE TABLE IF NOT EXISTS messages (
   author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   kind TEXT NOT NULL CHECK (kind IN ('update', 'task', 'alert')),
   text TEXT NOT NULL,
+  task_status TEXT CHECK (task_status IS NULL OR task_status IN ('open', 'done')),
+  edited_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS task_status TEXT;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+UPDATE messages
+SET task_status = NULL
+WHERE kind = 'task'
+  AND (text LIKE 'Created task "%".' OR text LIKE 'Completed task: %' OR text LIKE 'Re-opened task: %');
+UPDATE messages
+SET task_status = 'open'
+WHERE kind = 'task' AND task_status IS NULL
+  AND text NOT LIKE 'Created task "%".'
+  AND text NOT LIKE 'Completed task: %'
+  AND text NOT LIKE 'Re-opened task: %';
 
 CREATE TABLE IF NOT EXISTS message_reads (
   message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,

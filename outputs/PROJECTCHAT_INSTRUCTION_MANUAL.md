@@ -10,7 +10,7 @@ ProjectChat is a chat-first project workspace:
 
 - A **project** is a container, such as `Website Launch` or `Client ABC`.
 - A **subproject** is a working chat inside that project, such as `Landing Page`, `Content`, or `Client Approval`.
-- Messages can be posted as updates, tasks, or alerts.
+- Messages can be posted as updates, lightweight chat tasks, or alerts. Chat tasks are completed directly in the conversation and are not duplicated in the Tasks tab.
 - Tasks have an assignee, status, notes, status updates, and an optional live deadline countdown.
 - Full-access members can write, create tasks, and change task status.
 - Read-only members can follow the work without changing it.
@@ -328,6 +328,10 @@ The countdown is visual and updates every second while the app is open. Task ass
 ## 13. Daily Team Workflow
 
 Use the chat as the chronological record and Tasks as the actionable record.
+
+The sender can edit or delete any message they posted. Edited messages are labelled **Edited**. Administrators can delete messages for moderation, but cannot rewrite another person's message. Message deletion is permanent.
+
+Choose **Task** in the chat composer for a quick action that does not need an assignee, deadline, or status history. Any full-access room member can select **Done** on that message; it then becomes grey and crossed out in the conversation. Use the separate **Tasks** tab only for formal work that needs an assignee, countdown, and status updates.
 
 ### Start of day
 

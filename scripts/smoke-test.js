@@ -86,6 +86,13 @@ async function run() {
   const taskId = taskResponse.body.taskId;
   const updateBeforeDelete = await pool.query("SELECT COUNT(*) AS count FROM task_updates WHERE task_id = $1", [taskId]);
   if (Number(updateBeforeDelete.rows[0].count) !== 1) throw new Error("task update fixture was not created");
+  const formalTaskNotice = await pool.query(
+    "SELECT task_status FROM messages WHERE room_id = $1 AND text = $2",
+    [roomA, 'Created task "Disposable task".']
+  );
+  if (!formalTaskNotice.rows[0] || formalTaskNotice.rows[0].task_status !== null) {
+    throw new Error("formal task activity was incorrectly treated as an inline chat task");
+  }
 
   const fullRegistration = await register(fullMember, "Full Member", "full@example.com");
   const readonlyRegistration = await register(readonlyMember, "Read Only", "readonly@example.com");
@@ -142,6 +149,71 @@ async function run() {
   const mentionedMessage = ownerRoomAfterRead.body.messages.find((message) => message.text === "Please review the launch checklist.");
   if (!mentionedMessage?.readBy.some((reader) => reader.id === fullId)) {
     throw new Error("message read receipt did not include the teammate who opened the room");
+  }
+
+  const formalTasksBeforeChatTask = await pool.query("SELECT COUNT(*) AS count FROM tasks WHERE room_id = $1", [roomA]);
+  await expectStatus(
+    await owner.post(`/api/rooms/${roomA}/messages`).send({
+      kind: "task",
+      text: "Ship the inline checklist.",
+      mentionIds: [fullId]
+    }),
+    200,
+    "inline chat task creation"
+  );
+  let inlineTaskRoom = await expectStatus(await owner.get(`/api/rooms/${roomA}`), 200, "inline chat task details");
+  let inlineTaskMessage = inlineTaskRoom.body.messages.find((message) => message.text === "Ship the inline checklist.");
+  if (!inlineTaskMessage || inlineTaskMessage.task_status !== "open") {
+    throw new Error("inline chat task did not start open");
+  }
+  const formalTasksAfterChatTask = await pool.query("SELECT COUNT(*) AS count FROM tasks WHERE room_id = $1", [roomA]);
+  if (Number(formalTasksAfterChatTask.rows[0].count) !== Number(formalTasksBeforeChatTask.rows[0].count)) {
+    throw new Error("inline chat task was duplicated into the formal task list");
+  }
+  await expectStatus(
+    await readonlyMember.patch(`/api/messages/${inlineTaskMessage.id}/task-status`).send({ status: "done" }),
+    403,
+    "read-only inline task restriction"
+  );
+  await expectStatus(
+    await fullMember.patch(`/api/messages/${inlineTaskMessage.id}/task-status`).send({ status: "done" }),
+    200,
+    "full-member inline task completion"
+  );
+  await expectStatus(
+    await fullMember.patch(`/api/messages/${inlineTaskMessage.id}`).send({ text: "Not the sender." }),
+    403,
+    "non-sender message edit restriction"
+  );
+  await expectStatus(
+    await fullMember.delete(`/api/messages/${inlineTaskMessage.id}`),
+    403,
+    "non-sender message deletion restriction"
+  );
+  await expectStatus(
+    await anonymous.patch(`/api/messages/${inlineTaskMessage.id}`).send({ text: "Anonymous edit." }),
+    401,
+    "anonymous message edit restriction"
+  );
+  await expectStatus(
+    await owner.patch(`/api/messages/${inlineTaskMessage.id}`).send({ text: "Ship the edited inline checklist." }),
+    200,
+    "sender message edit"
+  );
+  inlineTaskRoom = await expectStatus(await owner.get(`/api/rooms/${roomA}`), 200, "edited inline task details");
+  inlineTaskMessage = inlineTaskRoom.body.messages.find((message) => message.id === inlineTaskMessage.id);
+  if (inlineTaskMessage?.text !== "Ship the edited inline checklist." || !inlineTaskMessage.edited_at || inlineTaskMessage.task_status !== "done") {
+    throw new Error("message editing lost its text, timestamp, or inline task status");
+  }
+  await expectStatus(await owner.delete(`/api/messages/${inlineTaskMessage.id}`), 200, "sender message deletion");
+  await expectStatus(await owner.delete(`/api/messages/${inlineTaskMessage.id}`), 404, "missing message deletion");
+  const [messageAfterDelete, readsAfterMessageDelete, mentionsAfterMessageDelete] = await Promise.all([
+    pool.query("SELECT COUNT(*) AS count FROM messages WHERE id = $1", [inlineTaskMessage.id]),
+    pool.query("SELECT COUNT(*) AS count FROM message_reads WHERE message_id = $1", [inlineTaskMessage.id]),
+    pool.query("SELECT COUNT(*) AS count FROM message_mentions WHERE message_id = $1", [inlineTaskMessage.id])
+  ]);
+  if ([messageAfterDelete, readsAfterMessageDelete, mentionsAfterMessageDelete].some((result) => Number(result.rows[0].count))) {
+    throw new Error("message deletion left message data, reads, or mentions behind");
   }
 
   const timedTask = await expectStatus(
@@ -332,7 +404,7 @@ async function run() {
   const finalDirectory = await expectStatus(await owner.get("/api/admin/users"), 200, "final member directory");
   if (finalDirectory.body.users.length !== 4) throw new Error("member directory lost an account during project operations");
 
-  console.log("Smoke test passed: admins, notifications, read receipts, task countdowns, memberships, and deletion rules.");
+  console.log("Smoke test passed: admins, notifications, receipts, inline chat tasks, message controls, countdowns, memberships, and deletion rules.");
 }
 
 run()

@@ -15,7 +15,8 @@ const state = {
   adminOverview: null,
   adminNotice: "",
   notifications: [],
-  unreadNotificationCount: 0
+  unreadNotificationCount: 0,
+  editingMessageId: null
 };
 
 const app = document.querySelector("#app");
@@ -162,6 +163,7 @@ function pendingApprovalView() {
 async function loadRoom(roomId) {
   state.currentRoomId = roomId;
   state.currentRoom = await api(`/api/rooms/${roomId}`);
+  state.editingMessageId = null;
   setRoomUnread(roomId, 0);
   state.mainView = "chat";
   render();
@@ -371,21 +373,41 @@ function sidebarHtml() {
 
 function messageHtml(message) {
   const self = message.author_id === state.user.id;
+  const canDelete = self || state.user.is_admin;
+  const inlineTask = message.kind === "task" && Boolean(message.task_status);
+  const canCompleteTask = inlineTask && state.currentRoom.membership.role === "full";
+  const taskDone = inlineTask && message.task_status === "done";
+  const editing = self && state.editingMessageId === message.id;
   const readByOthers = (message.readBy || []).filter((reader) => reader.id !== state.user.id);
   const receiptTotal = Math.max((state.currentRoom?.members.length || 1) - 1, 0);
   return `
     <article class="message-row ${self ? "self" : ""}">
       ${self ? "" : `<div class="message-avatar">${escapeHtml(initials(message.author_name))}</div>`}
-      <div class="message-bubble">
+      <div class="message-bubble ${taskDone ? "task-done" : ""}">
         <div class="message-top">
           <div class="message-meta">
             <strong>${escapeHtml(message.author_name)}</strong>
             <span class="message-label">${escapeHtml(message.kind)}</span>
           </div>
-          <span class="message-time">${formatTime(message.created_at)}</span>
+          <span class="message-time">${message.edited_at ? "Edited / " : ""}${formatTime(message.created_at)}</span>
         </div>
-        <p class="message-text">${escapeHtml(message.text)}</p>
-        ${message.mentions.length ? `<div class="message-tags">${message.mentions.map((mention) => `<span>@${escapeHtml(mention.name)}</span>`).join("")}</div>` : ""}
+        ${editing ? `
+          <form class="message-edit-form" data-action="edit-message" data-message-id="${escapeHtml(message.id)}">
+            <input name="text" value="${escapeHtml(message.text)}" maxlength="5000" required>
+            <button type="submit">Save</button>
+            <button data-action="cancel-edit-message" type="button">Cancel</button>
+          </form>
+        ` : `<p class="message-text">${escapeHtml(message.text)}</p>`}
+        ${!editing && message.mentions.length ? `<div class="message-tags">${message.mentions.map((mention) => `<span>@${escapeHtml(mention.name)}</span>`).join("")}</div>` : ""}
+        ${!editing ? `
+          <div class="message-actions">
+            ${inlineTask ? (taskDone
+              ? `<span class="chat-task-complete">Done</span>`
+              : canCompleteTask ? `<button data-action="complete-chat-task" data-message-id="${escapeHtml(message.id)}" type="button">Done</button>` : "") : ""}
+            ${self ? `<button data-action="start-edit-message" data-message-id="${escapeHtml(message.id)}" type="button">Edit</button>` : ""}
+            ${canDelete ? `<button class="delete-message-button" data-action="delete-message" data-message-id="${escapeHtml(message.id)}" type="button">Delete</button>` : ""}
+          </div>
+        ` : ""}
         ${self ? `<div class="read-receipt" title="${escapeHtml(readByOthers.map((reader) => reader.name).join(", ") || "Not read by teammates yet")}">${readByOthers.length ? `Seen ${readByOthers.length}/${receiptTotal}` : "Delivered"}</div>` : ""}
       </div>
     </article>
@@ -972,6 +994,31 @@ document.addEventListener("click", async (event) => {
       await loadRoom(state.currentRoomId);
     }
 
+    if (action === "complete-chat-task") {
+      await api(`/api/messages/${actionTarget.dataset.messageId}/task-status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "done" })
+      });
+      await loadRoom(state.currentRoomId);
+    }
+
+    if (action === "start-edit-message") {
+      state.editingMessageId = actionTarget.dataset.messageId;
+      render();
+      document.querySelector(`.message-edit-form[data-message-id="${CSS.escape(state.editingMessageId)}"] input`)?.focus();
+    }
+
+    if (action === "cancel-edit-message") {
+      state.editingMessageId = null;
+      render();
+    }
+
+    if (action === "delete-message") {
+      if (!window.confirm("Delete this message permanently?")) return;
+      await api(`/api/messages/${actionTarget.dataset.messageId}`, { method: "DELETE" });
+      await loadRoom(state.currentRoomId);
+    }
+
     if (action === "toggle-task") {
       await api(`/api/tasks/${actionTarget.dataset.taskId}`, {
         method: "PATCH",
@@ -1088,6 +1135,15 @@ document.addEventListener("submit", async (event) => {
         })
       });
       await bootstrap();
+    }
+
+    if (action === "edit-message") {
+      await api(`/api/messages/${form.dataset.messageId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ text: formData.get("text") })
+      });
+      state.editingMessageId = null;
+      await loadRoom(state.currentRoomId);
     }
 
     if (action === "create-task") {

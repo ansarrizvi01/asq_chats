@@ -715,6 +715,28 @@ p {
   border-radius: 14px 14px 6px 14px;
 }
 
+.message-bubble.task-done,
+.message-row.self .message-bubble.task-done {
+  color: #66737b;
+  background: #d8dfe2;
+  box-shadow: none;
+}
+
+.message-bubble.task-done .message-text {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.message-row.self .message-bubble.task-done .message-label,
+.message-row.self .message-bubble.task-done .message-time,
+.message-row.self .message-bubble.task-done .read-receipt {
+  color: #66737b;
+}
+
+.message-row.self .message-bubble.task-done .message-label {
+  background: rgba(255, 255, 255, 0.58);
+}
+
 .message-top,
 .message-meta {
   justify-content: space-between;
@@ -747,6 +769,68 @@ p {
 
 .message-text {
   line-height: 1.58;
+}
+
+.message-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.message-actions button,
+.message-edit-form button,
+.chat-task-complete {
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.message-row:not(.self) .message-actions button {
+  border-color: var(--line);
+  background: var(--surface-soft);
+}
+
+.message-actions .delete-message-button {
+  color: #fecaca;
+}
+
+.message-row:not(.self) .message-actions .delete-message-button {
+  color: var(--danger);
+}
+
+.chat-task-complete {
+  color: #415159;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.message-bubble.task-done .message-actions button {
+  color: #415159;
+  border-color: rgba(65, 81, 89, 0.16);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.message-bubble.task-done .message-actions .delete-message-button {
+  color: #a33a3a;
+}
+
+.message-edit-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 6px;
+}
+
+.message-edit-form input {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
+  color: #17252d;
+  background: white;
 }
 
 .message-tags {

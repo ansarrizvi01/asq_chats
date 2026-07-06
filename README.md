@@ -6,7 +6,7 @@ The workspace supports multiple global administrators with identical management 
 
 The Admin workspace includes a global member directory for direct project/subproject assignment, role changes, and access removal without deleting accounts. Individual task deletion is permanent and admin-only.
 
-Chats include unread badges and sender-side read receipts. The notification center tracks mentions, task assignments, task updates, and access changes. Tasks can have optional deadlines with live countdowns.
+Chats include unread badges, sender-side read receipts, sender edit/delete controls, and lightweight inline tasks that grey out when completed. Inline chat tasks stay in the conversation and do not appear in the formal Tasks tab. The notification center tracks mentions, task assignments, task updates, and access changes. Formal tasks can have optional deadlines with live countdowns.
 
 ## Production stack
 

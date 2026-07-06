@@ -403,7 +403,8 @@ async function roomDetails(roomId, userId) {
       [roomId]
     ),
     query(
-      `SELECT m.id, m.room_id, m.author_id, u.name AS author_name, m.kind, m.text, m.created_at
+      `SELECT m.id, m.room_id, m.author_id, u.name AS author_name, m.kind, m.text,
+              m.task_status, m.edited_at, m.created_at
        FROM messages m
        JOIN users u ON u.id = m.author_id
        WHERE m.room_id = $1
@@ -984,8 +985,9 @@ app.post("/api/rooms/:roomId/messages", requireAuth, requireRoomFullAccess, asyn
 
   await transaction(async (client) => {
     await client.query(
-      `INSERT INTO messages (id, room_id, author_id, kind, text, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
-      [messageId, req.params.roomId, req.user.id, kind, messageText, createdAt]
+      `INSERT INTO messages (id, room_id, author_id, kind, text, task_status, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [messageId, req.params.roomId, req.user.id, kind, messageText, kind === "task" ? "open" : null, createdAt]
     );
     await client.query(
       "INSERT INTO message_reads (message_id, user_id, read_at) VALUES ($1, $2, $3)",
@@ -1013,6 +1015,70 @@ app.post("/api/rooms/:roomId/messages", requireAuth, requireRoomFullAccess, asyn
       }
     }
   });
+  res.json({ ok: true });
+}));
+
+app.patch("/api/messages/:messageId", requireAuth, asyncHandler(async (req, res) => {
+  const messageText = text(req.body.text, 5000);
+  if (!messageText) return res.status(400).json({ error: "Message text is required." });
+
+  const messageResult = await query(
+    "SELECT id, room_id, author_id FROM messages WHERE id = $1",
+    [req.params.messageId]
+  );
+  const message = messageResult.rows[0];
+  if (!message) return res.status(404).json({ error: "Message not found." });
+  if (message.author_id !== req.user.id) {
+    return res.status(403).json({ error: "Only the sender can edit this message." });
+  }
+  const membership = await getRoomMembership(message.room_id, req.user.id);
+  if (!membership) return res.status(403).json({ error: "You do not have access to this room." });
+
+  await query(
+    "UPDATE messages SET text = $1, edited_at = $2 WHERE id = $3",
+    [messageText, nowIso(), message.id]
+  );
+  res.json({ ok: true });
+}));
+
+app.delete("/api/messages/:messageId", requireAuth, asyncHandler(async (req, res) => {
+  const messageResult = await query(
+    "SELECT id, room_id, author_id FROM messages WHERE id = $1",
+    [req.params.messageId]
+  );
+  const message = messageResult.rows[0];
+  if (!message) return res.status(404).json({ error: "Message not found." });
+  if (message.author_id !== req.user.id && !req.user.is_admin) {
+    return res.status(403).json({ error: "Only the sender or an administrator can delete this message." });
+  }
+  const membership = await getRoomMembership(message.room_id, req.user.id);
+  if (!membership) return res.status(403).json({ error: "You do not have access to this room." });
+
+  await query("DELETE FROM messages WHERE id = $1", [message.id]);
+  res.json({ ok: true });
+}));
+
+app.patch("/api/messages/:messageId/task-status", requireAuth, asyncHandler(async (req, res) => {
+  const status = req.body.status;
+  if (!["open", "done"].includes(status)) {
+    return res.status(400).json({ error: "Task status must be open or done." });
+  }
+
+  const messageResult = await query(
+    "SELECT id, room_id, kind, task_status FROM messages WHERE id = $1",
+    [req.params.messageId]
+  );
+  const message = messageResult.rows[0];
+  if (!message) return res.status(404).json({ error: "Message not found." });
+  if (message.kind !== "task" || !message.task_status) {
+    return res.status(400).json({ error: "This message is not an inline chat task." });
+  }
+  const membership = await getRoomMembership(message.room_id, req.user.id);
+  if (!membership || membership.role !== "full") {
+    return res.status(403).json({ error: "Full room access required." });
+  }
+
+  await query("UPDATE messages SET task_status = $1 WHERE id = $2", [status, message.id]);
   res.json({ ok: true });
 }));
 
