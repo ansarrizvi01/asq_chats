@@ -12,6 +12,7 @@ ProjectChat is a chat-first project workspace:
 - A **subproject** is a working chat inside that project, such as `Landing Page`, `Content`, or `Client Approval`.
 - Messages can be posted as updates, lightweight chat tasks, or alerts. Chat tasks are completed directly in the conversation and are not duplicated in the Tasks tab.
 - Tasks have an assignee, status, notes, status updates, and an optional live deadline countdown.
+- Chat messages and formal task conversations are separated by date. On mobile, select a subproject to open its full-screen conversation and use the back arrow to return to the project list.
 - Full-access members can write, create tasks, and change task status.
 - Read-only members can follow the work without changing it.
 

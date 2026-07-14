@@ -8,6 +8,8 @@ The Admin workspace includes a global member directory for direct project/subpro
 
 Chats include unread badges, sender-side read receipts, sender edit/delete controls, and lightweight inline tasks that grey out when completed. Inline chat tasks stay in the conversation and do not appear in the formal Tasks tab. The notification center tracks mentions, task assignments, task updates, and access changes. Formal tasks can have optional deadlines with live countdowns.
 
+The workspace uses a responsive WhatsApp-style two-pane layout. Messages and formal task conversations are grouped by day; on phones, the project list and selected conversation become separate full-screen views with a native back-to-projects flow.
+
 ## Production stack
 
 - Express.js application and API

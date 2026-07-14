@@ -16,7 +16,8 @@ const state = {
   adminNotice: "",
   notifications: [],
   unreadNotificationCount: 0,
-  editingMessageId: null
+  editingMessageId: null,
+  mobileView: "list"
 };
 
 const app = document.querySelector("#app");
@@ -52,6 +53,61 @@ function formatTime(iso) {
 
 function formatDateLine(iso) {
   return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function formatDateLabel(iso) {
+  const date = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  const key = date.toLocaleDateString();
+  if (key === today.toLocaleDateString()) return "Today";
+  if (key === yesterday.toLocaleDateString()) return "Yesterday";
+  return date.toLocaleDateString([], {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    ...(date.getFullYear() !== today.getFullYear() ? { year: "numeric" } : {})
+  });
+}
+
+function dateGroupedHtml(items, getDate, renderItem) {
+  let previousDate = "";
+  return items.map((item) => {
+    const iso = getDate(item);
+    const dateKey = new Date(iso).toLocaleDateString();
+    const divider = dateKey !== previousDate
+      ? `<div class="date-divider"><span>${escapeHtml(formatDateLabel(iso))}</span></div>`
+      : "";
+    previousDate = dateKey;
+    return `${divider}${renderItem(item)}`;
+  }).join("");
+}
+
+function icon(name) {
+  const paths = {
+    back: '<path d="M15 18l-6-6 6-6"/><path d="M9 12h10"/>',
+    bell: '<path d="M18 8a6 6 0 00-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/>',
+    check: '<path d="M5 12l4 4L19 6"/>',
+    details: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/>',
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L8 18l-4 1 1-4z"/>',
+    logout: '<path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M15 4h5v16h-5"/>',
+    menu: '<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    refresh: '<path d="M20 11a8 8 0 10-2 5.5"/><path d="M20 4v7h-7"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+    send: '<path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/>',
+    trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M7 7l1 13h8l1-13"/>',
+    users: '<path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87"/>'
+  };
+  return `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name] || ""}</svg>`;
+}
+
+function queuePaneScroll() {
+  window.requestAnimationFrame(() => {
+    const stream = document.querySelector(".message-stream");
+    if (stream) stream.scrollTop = stream.scrollHeight;
+  });
 }
 
 function initials(value) {
@@ -166,7 +222,9 @@ async function loadRoom(roomId) {
   state.editingMessageId = null;
   setRoomUnread(roomId, 0);
   state.mainView = "chat";
+  state.mobileView = "room";
   render();
+  queuePaneScroll();
 }
 
 function countdownText(dueAt, status) {
@@ -201,7 +259,7 @@ async function pollActivity() {
       badge.textContent = count ? String(count) : "";
     });
     const notificationBadge = document.querySelector("[data-notification-count]");
-    if (notificationBadge) notificationBadge.textContent = activity.unreadNotificationCount ? String(activity.unreadNotificationCount) : "N";
+    if (notificationBadge) notificationBadge.textContent = activity.unreadNotificationCount ? String(activity.unreadNotificationCount) : "";
   } catch (_error) {
     // A later poll will recover after temporary network or deployment interruptions.
   }
@@ -321,26 +379,29 @@ function sidebarHtml() {
       <div class="sidebar-top">
         <div class="workspace-head">
           <div class="brand">
-            <div class="brand-badge">PC</div>
+            <div class="brand-badge">${escapeHtml(initials(state.user.name))}</div>
             <div>
               <div class="workspace-title">ProjectChat</div>
-              <p class="meta-line">${escapeHtml(state.user.name)}</p>
+              <p class="meta-line">${escapeHtml(state.user.name)}${state.user.is_admin ? " / admin" : ""}</p>
             </div>
           </div>
           <div class="sidebar-icon-row">
-            <button class="icon-button" data-action="open-modal" data-modal="notifications" type="button" title="Notifications">
-              <span data-notification-count>${state.unreadNotificationCount || "N"}</span>
+            <button class="icon-button notification-button" data-action="open-modal" data-modal="notifications" type="button" title="Notifications" aria-label="Notifications">
+              ${icon("bell")}
+              <span class="icon-count" data-notification-count>${state.unreadNotificationCount || ""}</span>
             </button>
-            ${state.user.is_admin ? `<button class="icon-button" data-action="open-modal" data-modal="project" type="button" title="New project">+</button>` : ""}
+            ${state.user.is_admin ? `<button class="icon-button" data-action="open-modal" data-modal="project" type="button" title="New project" aria-label="New project">${icon("plus")}</button>` : ""}
             ${state.user.is_admin || state.pendingInvites.length ? `
-              <button class="icon-button" data-action="open-modal" data-modal="workspace" type="button" title="${state.user.is_admin ? "Admin workspace" : "Invitations"}">
-                ${state.user.is_admin ? state.pendingApprovalCount : state.pendingInvites.length}
+              <button class="icon-button notification-button" data-action="open-modal" data-modal="workspace" type="button" title="${state.user.is_admin ? "Admin workspace" : "Invitations"}" aria-label="${state.user.is_admin ? "Admin workspace" : "Invitations"}">
+                ${icon("users")}
+                <span class="icon-count">${state.user.is_admin ? (state.pendingApprovalCount || "") : state.pendingInvites.length}</span>
               </button>
             ` : ""}
-            <button class="icon-button" data-action="logout" type="button" title="Logout">x</button>
+            <button class="icon-button" data-action="logout" type="button" title="Logout" aria-label="Logout">${icon("logout")}</button>
           </div>
         </div>
         <div class="search-wrap">
+          ${icon("search")}
           <input class="search-input" id="chat-search" value="${escapeHtml(state.chatSearch)}" placeholder="Search projects and chats">
         </div>
       </div>
@@ -359,8 +420,13 @@ function sidebarHtml() {
             <div class="subproject-list">
               ${project.subprojects.map((room) => `
                 <button class="chat-item ${room.id === state.currentRoomId ? "active" : ""}" data-action="open-room" data-room-id="${escapeHtml(room.id)}" type="button">
-                  <span class="chat-title">${escapeHtml(room.name)}</span>
-                  <span class="unread-badge" data-unread-room="${escapeHtml(room.id)}">${room.unreadCount ? escapeHtml(room.unreadCount) : ""}</span>
+                  <span class="chat-list-avatar">${escapeHtml(initials(room.name))}</span>
+                  <span class="chat-list-copy">
+                    <span class="chat-title">${escapeHtml(room.name)}</span>
+                  </span>
+                  <span class="chat-list-end">
+                    <span class="unread-badge" data-unread-room="${escapeHtml(room.id)}">${room.unreadCount ? escapeHtml(room.unreadCount) : ""}</span>
+                  </span>
                 </button>
               `).join("")}
             </div>
@@ -382,33 +448,64 @@ function messageHtml(message) {
   const receiptTotal = Math.max((state.currentRoom?.members.length || 1) - 1, 0);
   return `
     <article class="message-row ${self ? "self" : ""}">
-      ${self ? "" : `<div class="message-avatar">${escapeHtml(initials(message.author_name))}</div>`}
       <div class="message-bubble ${taskDone ? "task-done" : ""}">
-        <div class="message-top">
-          <div class="message-meta">
-            <strong>${escapeHtml(message.author_name)}</strong>
-            <span class="message-label">${escapeHtml(message.kind)}</span>
-          </div>
-          <span class="message-time">${message.edited_at ? "Edited / " : ""}${formatTime(message.created_at)}</span>
+        <div class="message-meta">
+          <strong>${self ? "You" : escapeHtml(message.author_name)}</strong>
+          ${message.kind !== "update" ? `<span class="message-label ${escapeHtml(message.kind)}">${escapeHtml(message.kind)}</span>` : ""}
         </div>
         ${editing ? `
           <form class="message-edit-form" data-action="edit-message" data-message-id="${escapeHtml(message.id)}">
             <input name="text" value="${escapeHtml(message.text)}" maxlength="5000" required>
-            <button type="submit">Save</button>
+            <button type="submit" title="Save">${icon("check")}</button>
             <button data-action="cancel-edit-message" type="button">Cancel</button>
           </form>
         ` : `<p class="message-text">${escapeHtml(message.text)}</p>`}
         ${!editing && message.mentions.length ? `<div class="message-tags">${message.mentions.map((mention) => `<span>@${escapeHtml(mention.name)}</span>`).join("")}</div>` : ""}
         ${!editing ? `
-          <div class="message-actions">
-            ${inlineTask ? (taskDone
-              ? `<span class="chat-task-complete">Done</span>`
-              : canCompleteTask ? `<button data-action="complete-chat-task" data-message-id="${escapeHtml(message.id)}" type="button">Done</button>` : "") : ""}
-            ${self ? `<button data-action="start-edit-message" data-message-id="${escapeHtml(message.id)}" type="button">Edit</button>` : ""}
-            ${canDelete ? `<button class="delete-message-button" data-action="delete-message" data-message-id="${escapeHtml(message.id)}" type="button">Delete</button>` : ""}
+          <div class="message-foot">
+            <div class="message-actions">
+              ${inlineTask ? (taskDone
+                ? `<span class="chat-task-complete">${icon("check")} Done</span>`
+                : canCompleteTask ? `<button class="message-done-button" data-action="complete-chat-task" data-message-id="${escapeHtml(message.id)}" type="button">${icon("check")} Done</button>` : "") : ""}
+              ${self ? `<button data-action="start-edit-message" data-message-id="${escapeHtml(message.id)}" type="button" title="Edit message" aria-label="Edit message">${icon("edit")}</button>` : ""}
+              ${canDelete ? `<button class="delete-message-button" data-action="delete-message" data-message-id="${escapeHtml(message.id)}" type="button" title="Delete message" aria-label="Delete message">${icon("trash")}</button>` : ""}
+            </div>
+            <span class="message-time">${message.edited_at ? "edited / " : ""}${formatTime(message.created_at)}</span>
           </div>
         ` : ""}
-        ${self ? `<div class="read-receipt" title="${escapeHtml(readByOthers.map((reader) => reader.name).join(", ") || "Not read by teammates yet")}">${readByOthers.length ? `Seen ${readByOthers.length}/${receiptTotal}` : "Delivered"}</div>` : ""}
+        ${self && !editing ? `<div class="read-receipt" title="${escapeHtml(readByOthers.map((reader) => reader.name).join(", ") || "Not read by teammates yet")}">${readByOthers.length ? `✓✓ ${readByOthers.length}/${receiptTotal}` : "✓ Delivered"}</div>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function taskMessageHtml(task, disabled) {
+  const done = task.status === "done";
+  const latestUpdate = task.updates?.[0];
+  return `
+    <article class="task-message ${done ? "done" : ""}">
+      <button class="task-check" data-action="toggle-task" data-task-id="${escapeHtml(task.id)}" data-status="${done ? "open" : "done"}" type="button" ${disabled ? "disabled" : ""} aria-label="${done ? "Mark task not done" : "Mark task done"}" title="${done ? "Mark not done" : "Mark done"}">
+        ${done ? icon("check") : ""}
+      </button>
+      <div class="task-message-body">
+        <div class="task-message-head">
+          <strong class="task-title">${escapeHtml(task.title)}</strong>
+          <time>${formatTime(task.created_at)}</time>
+        </div>
+        ${task.note ? `<p class="task-note">${escapeHtml(task.note)}</p>` : ""}
+        <div class="task-message-meta">
+          <span>Assigned to ${escapeHtml(task.assignee_name)}</span>
+          <span class="task-state ${done ? "done" : "open"}">${done ? "Done" : "Open"}</span>
+          ${task.due_at ? `<span class="task-countdown" data-task-due="${escapeHtml(task.due_at)}" data-task-status="${escapeHtml(task.status)}">${escapeHtml(countdownText(task.due_at, task.status))}</span>` : ""}
+        </div>
+        ${latestUpdate ? `<div class="task-latest"><strong>${escapeHtml(latestUpdate.author_name)}</strong> ${escapeHtml(latestUpdate.text)}</div>` : ""}
+        ${!disabled ? `
+          <div class="task-actions">
+            <input class="task-status-input" id="task-update-${escapeHtml(task.id)}" placeholder="Reply with a status update">
+            <button class="save-status-button" data-action="task-update" data-task-id="${escapeHtml(task.id)}" type="button" aria-label="Send status update">${icon("send")}</button>
+            ${state.user.is_admin ? `<button class="task-delete-button" data-action="delete-task" data-task-id="${escapeHtml(task.id)}" type="button" aria-label="Delete task" title="Delete task">${icon("trash")}</button>` : ""}
+          </div>
+        ` : ""}
       </div>
     </article>
   `;
@@ -418,7 +515,11 @@ function mainHtml() {
   if (!state.currentRoom) {
     return `
       <main class="main">
-        <div class="empty-state">Create a subproject to start a team chat.</div>
+        <div class="welcome-state">
+          <div class="welcome-mark">PC</div>
+          <h2>Project conversations, kept simple.</h2>
+          <p>Select a subproject to open its chat and tasks.</p>
+        </div>
       </main>
     `;
   }
@@ -432,55 +533,37 @@ function mainHtml() {
     <main class="main">
       <header class="chat-header">
         <div class="chat-head-main">
+          <button class="mobile-back-button" data-action="back-to-list" type="button" aria-label="Back to projects">${icon("back")}</button>
           <div class="chat-avatar">${escapeHtml(initials(room.name))}</div>
           <div class="chat-heading">
             <h2>${escapeHtml(room.name)}</h2>
-            <p class="room-subtitle">${escapeHtml(room.projectName)} / ${escapeHtml(room.roomType)}</p>
+            <p class="room-subtitle">${escapeHtml(room.projectName)} · ${state.currentRoom.members.length} member${state.currentRoom.members.length === 1 ? "" : "s"}</p>
           </div>
         </div>
         <div class="header-actions">
-          <button class="soft-button ${state.mainView === "chat" ? "is-active" : ""}" data-action="set-main-view" data-view="chat" type="button">Chat</button>
-          <button class="soft-button ${state.mainView === "tasks" ? "is-active" : ""}" data-action="set-main-view" data-view="tasks" type="button">Tasks ${openTasks ? `(${openTasks})` : ""}</button>
-          <button class="soft-button" data-action="open-modal" data-modal="details" type="button">Project details</button>
-          <button class="icon-button" data-action="refresh-room" type="button" title="Refresh chat">R</button>
+          <nav class="view-tabs" aria-label="Room views">
+            <button class="view-tab ${state.mainView === "chat" ? "is-active" : ""}" data-action="set-main-view" data-view="chat" type="button">Chat</button>
+            <button class="view-tab ${state.mainView === "tasks" ? "is-active" : ""}" data-action="set-main-view" data-view="tasks" type="button">Tasks${openTasks ? `<span>${openTasks}</span>` : ""}</button>
+          </nav>
+          <button class="icon-button" data-action="open-modal" data-modal="details" type="button" title="Project details" aria-label="Project details">${icon("details")}</button>
+          <button class="icon-button refresh-button" data-action="refresh-room" type="button" title="Refresh chat" aria-label="Refresh chat">${icon("refresh")}</button>
         </div>
       </header>
 
       <section class="message-stream">
         ${state.mainView === "chat" ? `
-          <div class="date-divider">${formatDateLine(state.currentRoom.messages[0]?.created_at || new Date().toISOString())}</div>
           <div class="message-list">
-            ${state.currentRoom.messages.length ? state.currentRoom.messages.map(messageHtml).join("") : `<div class="empty-state">No messages in this room yet.</div>`}
+            ${state.currentRoom.messages.length ? dateGroupedHtml(state.currentRoom.messages, (message) => message.created_at, messageHtml) : `<div class="conversation-empty"><strong>No messages yet</strong><span>Start the conversation below.</span></div>`}
           </div>
         ` : `
           <div class="tasks-screen-head">
-            <div>
-              <strong>Tasks in this chat</strong>
-              <p class="meta-line">${openTasks} open / ${doneTasks} done</p>
-            </div>
+            <span>${openTasks} open</span>
+            <span>${doneTasks} done</span>
           </div>
-          <div class="tasks-grid">
-            ${state.currentRoom.tasks.length ? state.currentRoom.tasks.map((task) => `
-              <article class="task-card ${task.status === "done" ? "done" : ""}">
-                <div class="task-card-top">
-                  <strong class="task-title">${escapeHtml(task.title)}</strong>
-                  <div class="task-card-controls">
-                    <button class="task-toggle" data-action="toggle-task" data-task-id="${escapeHtml(task.id)}" data-status="${task.status === "open" ? "done" : "open"}" type="button">
-                      ${task.status === "open" ? "Mark done" : "Re-open"}
-                    </button>
-                    ${state.user.is_admin ? `<button class="danger-link" data-action="delete-task" data-task-id="${escapeHtml(task.id)}" type="button">Delete</button>` : ""}
-                  </div>
-                </div>
-                <p>${escapeHtml(task.note)}</p>
-                <p class="task-meta">Assigned to ${escapeHtml(task.assignee_name)} / ${escapeHtml(task.status)}</p>
-                ${task.due_at ? `<p class="task-countdown" data-task-due="${escapeHtml(task.due_at)}" data-task-status="${escapeHtml(task.status)}">${escapeHtml(countdownText(task.due_at, task.status))}</p>` : ""}
-                <div class="task-actions">
-                  <input class="task-status-input" id="task-update-${escapeHtml(task.id)}" placeholder="Write status update" ${disabled ? "disabled" : ""}>
-                  <button class="save-status-button" data-action="task-update" data-task-id="${escapeHtml(task.id)}" type="button" ${disabled ? "disabled" : ""}>Save</button>
-                </div>
-                <p class="hint">${task.updates[0] ? `Latest: ${escapeHtml(task.updates[0].text)} by ${escapeHtml(task.updates[0].author_name)}` : "No status updates yet."}</p>
-              </article>
-            `).join("") : `<div class="empty-state">No tasks in this chat yet.</div>`}
+          <div class="task-conversation">
+            ${state.currentRoom.tasks.length
+              ? dateGroupedHtml([...state.currentRoom.tasks].sort((a, b) => new Date(a.created_at) - new Date(b.created_at)), (task) => task.created_at, (task) => taskMessageHtml(task, disabled))
+              : `<div class="conversation-empty"><strong>No tasks yet</strong><span>Create one below and keep work visible.</span></div>`}
           </div>
         `}
       </section>
@@ -488,27 +571,34 @@ function mainHtml() {
       <section class="composer-panel">
         ${state.mainView === "chat" ? `
           <form class="message-form" data-action="send-message">
-            <select name="kind" ${disabled ? "disabled" : ""}>
+            <select class="composer-kind" name="kind" title="Message type" ${disabled ? "disabled" : ""}>
               <option value="update">Update</option>
               <option value="task">Task</option>
               <option value="alert">Alert</option>
             </select>
-            <select name="mentionId" ${disabled ? "disabled" : ""}>
-              <option value="">Mention member</option>
+            <select class="composer-mention" name="mentionId" title="Mention a member" aria-label="Mention a member" ${disabled ? "disabled" : ""}>
+              <option value="">@</option>
               ${state.currentRoom.members.map((member) => `<option value="${escapeHtml(member.id)}">${escapeHtml(member.name)}</option>`).join("")}
             </select>
-            <input name="text" placeholder="${disabled ? "This room is read only for you" : "Write an update"}" ${disabled ? "disabled" : ""} required>
-            <button class="pill-button" type="submit" ${disabled ? "disabled" : ""}>Send</button>
+            <input name="text" autocomplete="off" placeholder="${disabled ? "This room is read only for you" : "Type a message"}" ${disabled ? "disabled" : ""} required>
+            <button class="send-button" type="submit" ${disabled ? "disabled" : ""} aria-label="Send message">${icon("send")}</button>
           </form>
         ` : `
-          <form class="task-form inline-task-form" data-action="create-task">
-            <input name="title" placeholder="${disabled ? "This room is read only for you" : "Task title"}" ${disabled ? "disabled" : ""} required>
-            <select name="assigneeId" ${disabled ? "disabled" : ""}>
-              ${state.currentRoom.members.map((member) => `<option value="${escapeHtml(member.id)}">${escapeHtml(member.name)}</option>`).join("")}
-            </select>
-            <input name="dueAt" type="datetime-local" title="Task deadline" ${disabled ? "disabled" : ""}>
-            <textarea name="note" rows="1" placeholder="Short task note" ${disabled ? "disabled" : ""}></textarea>
-            <button class="pill-button" type="submit" ${disabled ? "disabled" : ""}>Create task</button>
+          <form class="task-composer" data-action="create-task">
+            <div class="task-compose-row">
+              <input name="title" autocomplete="off" placeholder="${disabled ? "This room is read only for you" : "Add a task"}" ${disabled ? "disabled" : ""} required>
+              <select name="assigneeId" title="Assign to" ${disabled ? "disabled" : ""}>
+                ${state.currentRoom.members.map((member) => `<option value="${escapeHtml(member.id)}">${escapeHtml(member.name)}</option>`).join("")}
+              </select>
+              <button class="send-button" type="submit" ${disabled ? "disabled" : ""} aria-label="Create task">${icon("plus")}</button>
+            </div>
+            <details class="task-compose-more">
+              <summary>Note and deadline</summary>
+              <div>
+                <input name="dueAt" type="datetime-local" title="Task deadline" ${disabled ? "disabled" : ""}>
+                <input name="note" placeholder="Optional note" ${disabled ? "disabled" : ""}>
+              </div>
+            </details>
           </form>
         `}
       </section>
@@ -861,7 +951,7 @@ function render() {
     return;
   }
   app.innerHTML = `
-    <div class="app-shell">
+    <div class="app-shell ${state.mobileView === "room" ? "mobile-room-open" : "mobile-list-open"}">
       ${sidebarHtml()}
       ${mainHtml()}
     </div>
@@ -885,9 +975,15 @@ document.addEventListener("click", async (event) => {
       await loadRoom(actionTarget.dataset.roomId);
     }
 
+    if (action === "back-to-list") {
+      state.mobileView = "list";
+      render();
+    }
+
     if (action === "set-main-view") {
       state.mainView = actionTarget.dataset.view;
       render();
+      queuePaneScroll();
     }
 
     if (action === "open-modal") {
@@ -1135,6 +1231,8 @@ document.addEventListener("submit", async (event) => {
         })
       });
       await bootstrap();
+      state.mobileView = "room";
+      queuePaneScroll();
     }
 
     if (action === "edit-message") {
@@ -1152,7 +1250,11 @@ document.addEventListener("submit", async (event) => {
         body: JSON.stringify(Object.fromEntries(formData.entries()))
       });
       await bootstrap();
-      openModal("tasks");
+      state.modal = null;
+      state.mainView = "tasks";
+      state.mobileView = "room";
+      render();
+      queuePaneScroll();
     }
   } catch (error) {
     const feedback = document.querySelector("#auth-feedback");
