@@ -132,8 +132,12 @@ async function run() {
     "mentioned message creation"
   );
   let fullActivity = await expectStatus(await fullMember.get("/api/activity"), 200, "unread activity summary");
-  if (!fullActivity.body.rooms.some((room) => room.roomId === roomA && room.unreadCount > 0)) {
+  const roomAActivity = fullActivity.body.rooms.find((room) => room.roomId === roomA);
+  if (!roomAActivity || roomAActivity.unreadCount <= 0) {
     throw new Error("new chat activity did not create an unread room count");
+  }
+  if (!roomAActivity.lastActivityAt || !Number.isFinite(new Date(roomAActivity.lastActivityAt).getTime())) {
+    throw new Error("activity summary did not include a valid last-activity timestamp");
   }
   let fullNotifications = await expectStatus(await fullMember.get("/api/notifications"), 200, "notification list");
   if (!fullNotifications.body.notifications.some((notification) => notification.type === "mention")) {
@@ -291,6 +295,15 @@ async function run() {
   const projectB = (await createProject(owner, "Project B")).body.projectId;
   const roomB1 = (await createRoom(owner, projectB, "Room B1")).body.roomId;
   const roomB2 = (await createRoom(owner, projectB, "Room B2")).body.roomId;
+  await expectStatus(
+    await owner.post(`/api/rooms/${roomB1}/messages`).send({ kind: "update", text: "Newest project activity." }),
+    200,
+    "sorting activity fixture"
+  );
+  const activitySortedBootstrap = await expectStatus(await owner.get("/api/bootstrap"), 200, "activity-sorted bootstrap");
+  if (activitySortedBootstrap.body.workspace[0]?.id !== projectB || activitySortedBootstrap.body.workspace[0]?.rooms[0]?.id !== roomB1) {
+    throw new Error("projects or chats were not sorted by their latest activity");
+  }
 
   await assign(owner, fullId, projectB, "readonly", roomB1);
   await createRoom(owner, projectB, "Room B Unassigned");
@@ -404,7 +417,7 @@ async function run() {
   const finalDirectory = await expectStatus(await owner.get("/api/admin/users"), 200, "final member directory");
   if (finalDirectory.body.users.length !== 4) throw new Error("member directory lost an account during project operations");
 
-  console.log("Smoke test passed: admins, notifications, receipts, inline chat tasks, message controls, countdowns, memberships, and deletion rules.");
+  console.log("Smoke test passed: activity sorting, unread chats, admins, notifications, receipts, inline tasks, message controls, countdowns, memberships, and deletion rules.");
 }
 
 run()

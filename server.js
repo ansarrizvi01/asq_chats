@@ -329,21 +329,21 @@ const requireRoomFullAccess = asyncHandler(async (req, res, next) => {
 
 async function summarizeWorkspace(userId) {
   const projectsResult = await query(
-    `SELECT p.id, p.name, p.description, pm.role
+    `SELECT p.id, p.name, p.description, p.created_at, pm.role
      FROM projects p
      JOIN project_members pm ON pm.project_id = p.id
      WHERE pm.user_id = $1
-     ORDER BY p.created_at ASC`,
+     ORDER BY p.created_at DESC`,
     [userId]
   );
 
-  return Promise.all(projectsResult.rows.map(async (project) => {
+  const projects = await Promise.all(projectsResult.rows.map(async (project) => {
     const roomsResult = await query(
-      `SELECT r.id, r.project_id, r.name, r.description, r.room_type, rm.role
+      `SELECT r.id, r.project_id, r.name, r.description, r.room_type, r.created_at, rm.role
        FROM rooms r
        JOIN room_members rm ON rm.room_id = r.id
        WHERE r.project_id = $1 AND rm.user_id = $2
-       ORDER BY r.created_at ASC`,
+       ORDER BY r.created_at DESC`,
       [project.id, userId]
     );
 
@@ -371,13 +371,21 @@ async function summarizeWorkspace(userId) {
       return {
         ...room,
         lastMessage: lastMessageResult.rows[0] || null,
+        lastActivityAt: lastMessageResult.rows[0]?.created_at || room.created_at,
         openTasks: Number(openTasksResult.rows[0].count),
         unreadCount: Number(unreadResult.rows[0].count)
       };
     }));
 
-    return { ...project, rooms };
+    rooms.sort((a, b) => new Date(b.lastActivityAt) - new Date(a.lastActivityAt));
+    return {
+      ...project,
+      rooms,
+      lastActivityAt: rooms[0]?.lastActivityAt || project.created_at
+    };
   }));
+
+  return projects.sort((a, b) => new Date(b.lastActivityAt) - new Date(a.lastActivityAt));
 }
 
 async function roomDetails(roomId, userId) {
@@ -617,19 +625,26 @@ app.patch("/api/notifications/read", requireAuth, asyncHandler(async (req, res) 
 
 app.get("/api/activity", requireAuth, asyncHandler(async (req, res) => {
   const [roomsResult, notificationsResult] = await Promise.all([
-    query("SELECT room_id FROM room_members WHERE user_id = $1", [req.user.id]),
+    query(
+      `SELECT rm.room_id, MAX(m.created_at) AS last_activity_at,
+              SUM(CASE
+                    WHEN m.id IS NOT NULL AND m.author_id <> $1
+                     AND (rr.last_read_at IS NULL OR m.created_at > rr.last_read_at)
+                    THEN 1 ELSE 0
+                  END) AS unread_count
+       FROM room_members rm
+       LEFT JOIN messages m ON m.room_id = rm.room_id
+       LEFT JOIN room_reads rr ON rr.room_id = rm.room_id AND rr.user_id = $1
+       WHERE rm.user_id = $1
+       GROUP BY rm.room_id`,
+      [req.user.id]
+    ),
     query("SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = FALSE", [req.user.id])
   ]);
-  const rooms = await Promise.all(roomsResult.rows.map(async ({ room_id: roomId }) => {
-    const unreadResult = await query(
-      `SELECT COUNT(*) AS count
-       FROM messages m
-       LEFT JOIN room_reads rr ON rr.room_id = m.room_id AND rr.user_id = $2
-       WHERE m.room_id = $1 AND m.author_id <> $2
-         AND (rr.last_read_at IS NULL OR m.created_at > rr.last_read_at)`,
-      [roomId, req.user.id]
-    );
-    return { roomId, unreadCount: Number(unreadResult.rows[0].count) };
+  const rooms = roomsResult.rows.map((room) => ({
+    roomId: room.room_id,
+    unreadCount: Number(room.unread_count),
+    lastActivityAt: room.last_activity_at
   }));
   res.json({ unreadNotificationCount: Number(notificationsResult.rows[0].count), rooms });
 }));

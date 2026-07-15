@@ -1529,6 +1529,15 @@ body:has(.app-shell)::before {
   background: var(--wa-active);
 }
 
+.chat-item.has-unread .chat-title {
+  color: #ffffff;
+  font-weight: 750;
+}
+
+.chat-item.has-unread:not(.active) {
+  background: rgba(24, 34, 41, 0.54);
+}
+
 .chat-list-avatar {
   width: 42px;
   height: 42px;
@@ -1557,11 +1566,13 @@ body:has(.app-shell)::before {
 }
 
 .unread-badge {
-  min-width: 19px;
-  min-height: 19px;
+  min-width: 20px;
+  min-height: 20px;
+  padding: 2px 6px;
   color: #062e26;
   background: #25d366;
-  line-height: 15px;
+  line-height: 16px;
+  box-shadow: 0 0 0 2px var(--wa-panel);
 }
 
 .main {
@@ -1720,9 +1731,9 @@ body:has(.app-shell)::before {
 .message-bubble {
   position: relative;
   width: fit-content;
-  max-width: min(72%, 720px);
-  padding: 7px 9px 6px;
-  gap: 4px;
+  max-width: min(64%, 620px);
+  padding: 5px 8px 4px;
+  gap: 3px;
   border-radius: 8px 8px 8px 2px;
   color: var(--wa-text);
   background: var(--wa-incoming);
@@ -1737,7 +1748,7 @@ body:has(.app-shell)::before {
 
 .message-meta {
   display: flex;
-  min-height: 16px;
+  min-height: 14px;
   gap: 6px;
   justify-content: flex-start;
 }
@@ -1774,8 +1785,8 @@ body:has(.app-shell)::before {
   max-width: 100%;
   overflow-wrap: anywhere;
   color: inherit;
-  font-size: 0.86rem;
-  line-height: 1.42;
+  font-size: 0.82rem;
+  line-height: 1.36;
   white-space: pre-wrap;
 }
 
@@ -1783,14 +1794,21 @@ body:has(.app-shell)::before {
   display: flex;
   align-items: flex-end;
   justify-content: flex-end;
-  min-height: 16px;
-  gap: 7px;
+  min-height: 14px;
+  gap: 5px;
 }
 
 .message-time {
   color: var(--wa-muted);
   font-size: 0.6rem;
   white-space: nowrap;
+}
+
+.message-time .read-receipt {
+  display: inline;
+  margin-left: 2px;
+  color: #53bdeb;
+  font-size: inherit;
 }
 
 .message-row.self .message-time {
@@ -1837,7 +1855,6 @@ body:has(.app-shell)::before {
 }
 
 .read-receipt {
-  margin-top: -3px;
   color: #53bdeb;
   font-size: 0.57rem;
 }
@@ -2250,7 +2267,7 @@ body:has(.app-shell)::before {
   }
 
   .message-bubble {
-    max-width: 82%;
+    max-width: 76%;
   }
 
   .message-form {
@@ -2342,7 +2359,7 @@ body:has(.app-shell)::before {
   }
 
   .message-bubble {
-    max-width: 88%;
+    max-width: 84%;
   }
 
   .message-actions {

@@ -144,6 +144,60 @@ function setRoomUnread(roomId, count) {
   });
 }
 
+function setRoomActivity(roomId, lastActivityAt) {
+  state.workspace.forEach((project) => {
+    project.rooms.forEach((room) => {
+      if (room.id === roomId && lastActivityAt) room.lastActivityAt = lastActivityAt;
+    });
+  });
+}
+
+function activityTime(record) {
+  return new Date(record.lastActivityAt || record.lastMessage?.created_at || record.created_at || 0).getTime();
+}
+
+function sidebarProjectGroups() {
+  const search = state.chatSearch.trim().toLowerCase();
+  return state.workspace.map((project) => {
+    const subprojects = project.rooms
+      .filter((room) => {
+        if (room.room_type !== "subproject") return false;
+        if (!search || project.name.toLowerCase().includes(search)) return true;
+        return room.name.toLowerCase().includes(search);
+      })
+      .sort((a, b) => activityTime(b) - activityTime(a));
+    return {
+      ...project,
+      subprojects,
+      latestActivity: subprojects[0] ? activityTime(subprojects[0]) : activityTime(project)
+    };
+  })
+    .filter((project) => !search || project.name.toLowerCase().includes(search) || project.subprojects.length)
+    .sort((a, b) => b.latestActivity - a.latestActivity);
+}
+
+function chatListHtml() {
+  const projectGroups = sidebarProjectGroups();
+  return projectGroups.length ? projectGroups.map((project) => `
+    <section class="project-group">
+      <div class="project-label">${escapeHtml(project.name)}</div>
+      <div class="subproject-list">
+        ${project.subprojects.map((room) => `
+          <button class="chat-item ${room.id === state.currentRoomId ? "active" : ""} ${room.unreadCount ? "has-unread" : ""}" data-action="open-room" data-room-id="${escapeHtml(room.id)}" type="button" aria-label="${escapeHtml(room.name)}${room.unreadCount ? `, ${room.unreadCount} unread` : ""}">
+            <span class="chat-list-avatar">${escapeHtml(initials(room.name))}</span>
+            <span class="chat-list-copy">
+              <span class="chat-title">${escapeHtml(room.name)}</span>
+            </span>
+            <span class="chat-list-end">
+              <span class="unread-badge" data-unread-room="${escapeHtml(room.id)}" title="${room.unreadCount ? `${room.unreadCount} unread message${room.unreadCount === 1 ? "" : "s"}` : ""}">${room.unreadCount ? escapeHtml(room.unreadCount) : ""}</span>
+            </span>
+          </button>
+        `).join("")}
+      </div>
+    </section>
+  `).join("") : `<div class="sidebar-empty">No subprojects found</div>`;
+}
+
 async function bootstrap() {
   const me = await api("/api/me");
   state.user = me.user;
@@ -253,11 +307,12 @@ async function pollActivity() {
     const activity = await api("/api/activity");
     state.unreadNotificationCount = activity.unreadNotificationCount;
     const counts = new Map(activity.rooms.map((room) => [room.roomId, room.unreadCount]));
-    flatRooms().forEach((room) => setRoomUnread(room.id, counts.get(room.id) || 0));
-    document.querySelectorAll("[data-unread-room]").forEach((badge) => {
-      const count = counts.get(badge.dataset.unreadRoom) || 0;
-      badge.textContent = count ? String(count) : "";
+    activity.rooms.forEach((room) => {
+      setRoomUnread(room.roomId, room.unreadCount);
+      setRoomActivity(room.roomId, room.lastActivityAt);
     });
+    const chatList = document.querySelector(".chat-list");
+    if (chatList) chatList.innerHTML = chatListHtml();
     const notificationBadge = document.querySelector("[data-notification-count]");
     if (notificationBadge) notificationBadge.textContent = activity.unreadNotificationCount ? String(activity.unreadNotificationCount) : "";
   } catch (_error) {
@@ -364,16 +419,6 @@ function inviteListHtml() {
 }
 
 function sidebarHtml() {
-  const search = state.chatSearch.trim().toLowerCase();
-  const projectGroups = state.workspace.map((project) => {
-    const subprojects = project.rooms.filter((room) => {
-      if (room.room_type !== "subproject") return false;
-      if (!search || project.name.toLowerCase().includes(search)) return true;
-      return room.name.toLowerCase().includes(search);
-    });
-    return { ...project, subprojects };
-  }).filter((project) => !search || project.name.toLowerCase().includes(search) || project.subprojects.length);
-
   return `
     <aside class="sidebar">
       <div class="sidebar-top">
@@ -414,24 +459,7 @@ function sidebarHtml() {
       ` : ""}
       ${state.inviteNotice ? `<div class="sidebar-notice">${escapeHtml(state.inviteNotice)}</div>` : ""}
       <div class="chat-list">
-        ${projectGroups.length ? projectGroups.map((project) => `
-          <section class="project-group">
-            <div class="project-label">${escapeHtml(project.name)}</div>
-            <div class="subproject-list">
-              ${project.subprojects.map((room) => `
-                <button class="chat-item ${room.id === state.currentRoomId ? "active" : ""}" data-action="open-room" data-room-id="${escapeHtml(room.id)}" type="button">
-                  <span class="chat-list-avatar">${escapeHtml(initials(room.name))}</span>
-                  <span class="chat-list-copy">
-                    <span class="chat-title">${escapeHtml(room.name)}</span>
-                  </span>
-                  <span class="chat-list-end">
-                    <span class="unread-badge" data-unread-room="${escapeHtml(room.id)}">${room.unreadCount ? escapeHtml(room.unreadCount) : ""}</span>
-                  </span>
-                </button>
-              `).join("")}
-            </div>
-          </section>
-        `).join("") : `<div class="sidebar-empty">No subprojects found</div>`}
+        ${chatListHtml()}
       </div>
     </aside>
   `;
@@ -445,14 +473,13 @@ function messageHtml(message) {
   const taskDone = inlineTask && message.task_status === "done";
   const editing = self && state.editingMessageId === message.id;
   const readByOthers = (message.readBy || []).filter((reader) => reader.id !== state.user.id);
-  const receiptTotal = Math.max((state.currentRoom?.members.length || 1) - 1, 0);
   return `
     <article class="message-row ${self ? "self" : ""}">
       <div class="message-bubble ${taskDone ? "task-done" : ""}">
-        <div class="message-meta">
-          <strong>${self ? "You" : escapeHtml(message.author_name)}</strong>
+        ${!self || message.kind !== "update" ? `<div class="message-meta">
+          ${!self ? `<strong>${escapeHtml(message.author_name)}</strong>` : ""}
           ${message.kind !== "update" ? `<span class="message-label ${escapeHtml(message.kind)}">${escapeHtml(message.kind)}</span>` : ""}
-        </div>
+        </div>` : ""}
         ${editing ? `
           <form class="message-edit-form" data-action="edit-message" data-message-id="${escapeHtml(message.id)}">
             <input name="text" value="${escapeHtml(message.text)}" maxlength="5000" required>
@@ -470,10 +497,12 @@ function messageHtml(message) {
               ${self ? `<button data-action="start-edit-message" data-message-id="${escapeHtml(message.id)}" type="button" title="Edit message" aria-label="Edit message">${icon("edit")}</button>` : ""}
               ${canDelete ? `<button class="delete-message-button" data-action="delete-message" data-message-id="${escapeHtml(message.id)}" type="button" title="Delete message" aria-label="Delete message">${icon("trash")}</button>` : ""}
             </div>
-            <span class="message-time">${message.edited_at ? "edited / " : ""}${formatTime(message.created_at)}</span>
+            <span class="message-time">
+              ${message.edited_at ? "edited · " : ""}${formatTime(message.created_at)}
+              ${self ? `<span class="read-receipt" title="${escapeHtml(readByOthers.map((reader) => reader.name).join(", ") || "Not read by teammates yet")}">${readByOthers.length ? "✓✓" : "✓"}</span>` : ""}
+            </span>
           </div>
         ` : ""}
-        ${self && !editing ? `<div class="read-receipt" title="${escapeHtml(readByOthers.map((reader) => reader.name).join(", ") || "Not read by teammates yet")}">${readByOthers.length ? `✓✓ ${readByOthers.length}/${receiptTotal}` : "✓ Delivered"}</div>` : ""}
       </div>
     </article>
   `;
